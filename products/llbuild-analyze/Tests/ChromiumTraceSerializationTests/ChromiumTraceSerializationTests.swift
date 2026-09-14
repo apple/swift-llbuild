@@ -29,7 +29,36 @@ final class ChromiumTraceSerializationTests: XCTestCase {
 
         let events = try XCTUnwrap(json["traceEvents"] as? [[String: Any]])
         XCTAssertEqual(events.count, 1)
-        XCTAssertEqual(events.first?["name"] as? String, "<BuildKey.Command name=compile-main>")
+        let encodedEvent = try XCTUnwrap(events.first)
+        XCTAssertEqual(
+            Set(encodedEvent.keys),
+            Set(["args", "cat", "dur", "name", "ph", "pid", "tid", "ts"])
+        )
+        XCTAssertEqual(encodedEvent["name"] as? String, "<BuildKey.Command name=compile-main>")
+        XCTAssertEqual(encodedEvent["cat"] as? String, "critical-path")
+        XCTAssertEqual(encodedEvent["ph"] as? String, "X")
+        XCTAssertEqual(encodedEvent["ts"] as? Int, 1_250_000)
+        XCTAssertEqual(encodedEvent["dur"] as? Int, 1_500_000)
+        XCTAssertEqual(encodedEvent["pid"] as? Int, 0)
+        XCTAssertEqual(encodedEvent["tid"] as? Int, 0)
+
+        let args = try XCTUnwrap(encodedEvent["args"] as? [String: Any])
+        XCTAssertEqual(
+            Set(args.keys),
+            Set([
+                "buildKey", "buildKeyKind", "dependencies", "durationSeconds",
+                "onCriticalPath", "valueKind",
+            ])
+        )
+        XCTAssertEqual(args["buildKeyKind"] as? String, "command")
+        XCTAssertEqual(args["buildKey"] as? String, "compile-main")
+        XCTAssertEqual(args["valueKind"] as? String, "skipped-command")
+        XCTAssertEqual(args["durationSeconds"] as? Double, 1.5)
+        XCTAssertEqual(args["onCriticalPath"] as? Bool, true)
+        XCTAssertEqual(
+            args["dependencies"] as? [String],
+            ["<BuildKey.Node name=main.swift>"]
+        )
     }
 
     func testChromiumTraceEventUsesCompleteEventFormat() {
@@ -57,5 +86,38 @@ final class ChromiumTraceSerializationTests: XCTestCase {
         XCTAssertEqual(event.args.durationSeconds, 1.5)
         XCTAssertEqual(event.args.onCriticalPath, true)
         XCTAssertEqual(event.args.dependencies, ["<BuildKey.Node name=main.swift>"])
+    }
+
+    func testChromiumTraceEventUsesBuildCategoryForNonCriticalEvents() {
+        let event = chromiumTraceEvent(
+            name: "<BuildKey.Command name=compile-main>",
+            buildKeyKind: "command",
+            buildKey: "compile-main",
+            valueKind: "successful-command",
+            start: 1.25,
+            duration: 1.5,
+            isOnCriticalPath: false,
+            dependencies: []
+        )
+
+        XCTAssertEqual(event.cat, "build")
+        XCTAssertEqual(event.args.onCriticalPath, false)
+        XCTAssertEqual(event.args.dependencies, [])
+    }
+
+    func testChromiumTraceEventClampsNegativeTiming() {
+        let event = chromiumTraceEvent(
+            name: "<BuildKey.Command name=compile-main>",
+            buildKeyKind: "command",
+            buildKey: "compile-main",
+            valueKind: "failed-command",
+            start: -1,
+            duration: -0.5,
+            isOnCriticalPath: false,
+            dependencies: []
+        )
+
+        XCTAssertEqual(event.ts, 0)
+        XCTAssertEqual(event.dur, 0)
     }
 }
