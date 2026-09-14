@@ -8,6 +8,7 @@
 
 import TSCBasic
 import llbuildAnalysis
+import llbuildAnalyzeSupport
 import llbuildSwift
 import ArgumentParser
 
@@ -19,7 +20,20 @@ struct CriticalPathTool: ParsableCommand {
     static var configuration = CommandConfiguration(commandName: "critical-path", shouldDisplay: true)
     
     enum OutputFormat: String, ExpressibleByArgument {
-        case json, graphviz
+        case json, graphviz, chromiumTrace = "chromium-trace"
+
+        init?(argument: String) {
+            switch argument {
+            case "json":
+                self = .json
+            case "graphviz":
+                self = .graphviz
+            case "chromium-trace", "chromiumTrace":
+                self = .chromiumTrace
+            default:
+                return nil
+            }
+        }
     }
 
     enum GraphvizDisplay: String, ExpressibleByArgument {
@@ -62,6 +76,8 @@ struct CriticalPathTool: ParsableCommand {
                 data = try json(path, allKeyResults: allKeysWithResult, buildKeyLookup: solver.keyLookup)
             case .graphviz:
                 data = graphViz(path, buildKeyLookup: solver.keyLookup)
+            case .chromiumTrace:
+                data = try chromiumTrace(path, allKeyResults: allKeysWithResult)
             }
             try verifyOutputPath()
             FileManager.default.createFile(atPath: outputPath.pathString, contents: data)

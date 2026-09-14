@@ -23,7 +23,16 @@ let package = Package(
     targets: [
         .target(
             name: "llbuildAnalyzeTool",
-            dependencies: ["SwiftToolsSupport-auto", "llbuildAnalysis", "ArgumentParser"],
-            path: "Sources"),
+            dependencies: ["SwiftToolsSupport-auto", "llbuildAnalysis", "llbuildAnalyzeSupport", "ArgumentParser"],
+            path: "Sources",
+            exclude: ["llbuildAnalyzeSupport"]),
+        .target(
+            name: "llbuildAnalyzeSupport",
+            dependencies: ["llbuildAnalysis", "llbuildSwift"],
+            path: "Sources/llbuildAnalyzeSupport"),
+        .testTarget(
+            name: "ChromiumTraceSerializationTests",
+            dependencies: ["llbuildAnalyzeSupport"],
+            path: "Tests/ChromiumTraceSerializationTests"),
     ]
 )
