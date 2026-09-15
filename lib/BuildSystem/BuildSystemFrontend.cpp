@@ -18,6 +18,7 @@
 #include "llbuild/Basic/LLVM.h"
 #include "llbuild/Basic/PlatformUtility.h"
 #include "llbuild/BuildSystem/BuildDescription.h"
+#include "llbuild/BuildSystem/BuildDescriptionBuilder.h"
 #include "llbuild/BuildSystem/BuildFile.h"
 #include "llbuild/BuildSystem/BuildKey.h"
 #include "llbuild/BuildSystem/BuildValue.h"
@@ -322,14 +323,35 @@ struct BuildSystemFrontendImpl {
   std::unique_ptr<basic::FileSystem> fileSystem;
   std::unique_ptr<BuildSystem> system;
 
+  /// Populates the description in memory, if this frontend was constructed with
+  /// an in-memory source. Null means parse `invocation.buildFilePath` instead.
+  ///
+  /// Cleared once a description has been loaded, so it cannot outlive its use.
+  std::function<bool(BuildDescriptionBuilder&)> populateDescription;
+
+  /// The label to report in-memory description diagnostics against.
+  std::string descriptionOriginName;
+
+  /// Whether the description is built in memory rather than parsed.
+  ///
+  /// Tracked separately from `populateDescription`, which is cleared as soon as
+  /// it has been used.
+  bool inMemoryDescription = false;
+
 
 public:
   BuildSystemFrontendImpl(BuildSystemFrontendDelegate& delegate,
                           BuildSystemFrontendDelegateImpl* delegateImpl,
                           const BuildSystemInvocation& invocation,
-                          std::unique_ptr<basic::FileSystem> fileSystem)
-      : delegate(delegate), delegateImpl(delegateImpl), invocation(invocation), fileSystem(std::move(fileSystem)) {
+                          std::unique_ptr<basic::FileSystem> fileSystem,
+                          std::function<bool(BuildDescriptionBuilder&)> populateDescription,
+                          StringRef descriptionOriginName)
+      : delegate(delegate), delegateImpl(delegateImpl), invocation(invocation),
+        fileSystem(std::move(fileSystem)),
+        populateDescription(std::move(populateDescription)),
+        descriptionOriginName(descriptionOriginName) {
         assert(this->fileSystem);
+        inMemoryDescription = bool(this->populateDescription);
       }
 
 
@@ -358,6 +380,40 @@ public:
   bool initialize() {
     std::lock_guard<std::mutex> lock(stateMutex);
 
+    if (auto result = beginInitializeLocked())
+      return *result;
+
+    if (populateDescription) {
+      // Build the description in place of parsing one. The system runs the
+      // callback against its own build-file delegate, so tools resolve exactly
+      // as they would for the equivalent manifest.
+      //
+      // Moved out first: the callback is needed exactly once, and holding it
+      // past that would let it outlive whatever it captured.
+      auto populate = std::move(populateDescription);
+      populateDescription = nullptr;
+      if (!system->loadDescription(populate, descriptionOriginName)) {
+        system = nullptr;
+        return false;
+      }
+    } else if (!system->loadDescription(invocation.buildFilePath)) {
+      system = nullptr;
+      return false;
+    }
+
+    return finishInitializeLocked();
+  }
+
+private:
+  /// Requires `stateMutex` held. Resets the per-build counters and prepares the
+  /// underlying `BuildSystem`, the work every initialize entry point shares
+  /// before it has a description. The result says what the caller should do
+  /// next:
+  ///   - a value: initialization is already resolved (the frontend was
+  ///     cancelled, or the system already existed and was reset); return it.
+  ///   - `llvm::None`: a fresh `BuildSystem` was created; load a description
+  ///     into it and then call `finishInitializeLocked()`.
+  llvm::Optional<bool> beginInitializeLocked() {
     delegateImpl->numFailedCommands = 0;
     delegateImpl->numErrors = 0;
 
@@ -370,6 +426,16 @@ public:
       return true;
     }
 
+    if (!createSystemLocked())
+      return false;
+
+    return llvm::None;
+  }
+
+  /// Requires `stateMutex` held and `system` null. Honors `--chdir` and creates
+  /// the underlying `BuildSystem`, without loading a description. On failure,
+  /// reports an error and leaves `system` null.
+  bool createSystemLocked() {
     if (!invocation.chdirPath.empty()) {
       if (!sys::chdir(invocation.chdirPath.c_str())) {
         delegate.error(Twine("unable to honor --chdir: ") + strerror(errno));
@@ -385,13 +451,13 @@ public:
 
     // Create the build system.
     system = std::make_unique<BuildSystem>(delegate, std::move(fileSystem));
+    return true;
+  }
 
-    // Load the build file.
-    if (!system->loadDescription(invocation.buildFilePath)) {
-      system = nullptr;
-      return false;
-    }
-
+  /// Requires `stateMutex` held, `system` created and a description loaded.
+  /// Enables tracing and attaches the database. On failure, reports an error and
+  /// clears `system`.
+  bool finishInitializeLocked() {
     // Enable tracing, if requested.
     if (!invocation.traceFilePath.empty()) {
       const auto dir = llvm::sys::path::parent_path(invocation.traceFilePath);
@@ -418,6 +484,13 @@ public:
       StringRef dbPath = invocation.dbPath;
       if (llvm::sys::path::is_relative(invocation.dbPath) &&
           dbPath.find("://") == StringRef::npos && !dbPath.startswith(":")) {
+        // An in-memory description has no input file to be relative to.
+        if (inMemoryDescription) {
+          delegate.error(Twine("database path must be absolute when the build "
+                               "description is built in memory: ") + dbPath);
+          system = nullptr;
+          return false;
+        }
         llvm::sys::path::append(
             tmp, llvm::sys::path::parent_path(invocation.buildFilePath),
             invocation.dbPath);
@@ -435,6 +508,7 @@ public:
     return true;
   }
 
+public:
 
   bool buildNode(StringRef nodeToBuild) {
     llbuild_defer {
@@ -800,8 +874,29 @@ BuildSystemFrontend(BuildSystemFrontendDelegate& delegate,
   : impl(new BuildSystemFrontendImpl(delegate,
                                      static_cast<BuildSystemFrontendDelegateImpl*>(delegate.impl),
                                      invocation,
-                                     std::move(fileSystem)))
+                                     std::move(fileSystem),
+                                     nullptr,
+                                     ""))
 {
+  auto implPtr = static_cast<BuildSystemFrontendImpl*>(impl);
+  implPtr->delegateImpl->frontend = implPtr;
+}
+
+BuildSystemFrontend::
+BuildSystemFrontend(BuildSystemFrontendDelegate& delegate,
+                    const BuildSystemInvocation& invocation,
+                    std::unique_ptr<basic::FileSystem> fileSystem,
+                    std::function<bool(BuildDescriptionBuilder&)> populateDescription,
+                    StringRef descriptionOriginName)
+  : impl(new BuildSystemFrontendImpl(delegate,
+                                     static_cast<BuildSystemFrontendDelegateImpl*>(delegate.impl),
+                                     invocation,
+                                     std::move(fileSystem),
+                                     std::move(populateDescription),
+                                     descriptionOriginName))
+{
+  assert(static_cast<BuildSystemFrontendImpl*>(impl)->populateDescription &&
+         "in-memory description requires a populate callback");
   auto implPtr = static_cast<BuildSystemFrontendImpl*>(impl);
   implPtr->delegateImpl->frontend = implPtr;
 }

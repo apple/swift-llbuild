@@ -1,5 +1,6 @@
 add_llbuild_library(llbuildBuildSystem STATIC
   BuildDescription.cpp
+  BuildDescriptionBuilder.cpp
   BuildFile.cpp
   BuildKey.cpp
   BuildNode.cpp

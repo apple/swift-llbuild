@@ -222,6 +222,18 @@ public:
     }
     return true;
   }
+  virtual bool configureEnvironmentBase(const ConfigureContext&,
+                                        const EnvironmentBase* base) override {
+    if (delegate.shouldShowOutput()) {
+      printf("  -- 'env-base': {\n");
+      for (const auto& binding: base->getBindings()) {
+        printf("  --   '%s': '%s'\n", binding.first.str().c_str(),
+               binding.second.str().c_str());
+      }
+      printf("  -- }\n");
+    }
+    return true;
+  }
 
   virtual BuildValue getResultForOutput(Node* node,
                                         const BuildValue& value) override {

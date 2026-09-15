@@ -36,8 +36,11 @@ be deeply integrated with *llbuild*.
 
 The build graph is supplied to the ``BuildSystem`` via a ``BuildDescription``
 which can either be loaded from a build file (see below), or can be directly
-constructed by clients. The latter facility is currently only used for
-constructing unit tests, and is not exposed via the public llbuild API.
+constructed by clients. Direct construction is exposed through the public
+llbuild API: a client hands over a callback which populates a
+``BuildDescriptionBuilder`` and never writes a build file at all. This suits
+clients which already hold the whole graph in memory, since serializing it to
+YAML only to parse it straight back is pure overhead.
 
 Nodes
 -----
@@ -210,7 +213,7 @@ A small example build file is below:
       outputs: ["hello.o"]
       args: -O0
 
-The build file is logically organized into five different sections (grouped by
+The build file is logically organized into seven different sections (grouped by
 keys in a YAML mapping). These sections *MUST* appear in the following order if
 present.
 
@@ -271,6 +274,24 @@ present.
   .. note::
     FIXME: We may want to add the notion of types to nodes (for example, file
     versus string).
+
+* Environment Base Definitions (`env-bases` key)
+
+  This section defines named sets of environment bindings which commands can
+  share by naming one in their `env-base` attribute. It exists so that a build
+  file describing thousands of commands which all run in substantially the same
+  environment does not have to repeat that environment once per command; the
+  bindings are stored once and referenced by name.
+
+  Each key must be a scalar string naming the base, and the value must be a map
+  of scalar keys to scalar values. Naming the same base twice is an error, as is
+  a non-scalar key or value.
+
+  A command which names a base gets that base's bindings, with any entries in
+  its own `env` mapping substituted in place of the base's entry for the same
+  key, and any keys the base does not define appended. Commands sharing a base
+  do not otherwise affect one another. See the `env-base` command attribute
+  below.
 
 * ``Command`` Definitions (`commands` key)
 
@@ -502,12 +523,50 @@ attributes on commands, and not at the tool level.
    * - signature
      - An arbitrary string used to compute the task signature. If defined, this
        will be used instead of the built-in signature computation strategy,
-       which takes into account `args`, `env`, `deps`, `deps-style`,
-       `inherit-env` and `can-safely-interrupt`.
+       which takes into account `args`, `env`, `env-base`, `deps`, `deps-style`,
+       `inherit-env`, `can-safely-interrupt`, `signature-ignored-args` and
+       `additional-signature-data`.
+
+       Deprecated. Clients used to hash their own command lines and hand the
+       result over in this attribute, which made every build pay for a full
+       digest of every command before the build system had decided anything was
+       out of date. Prefer the built-in computation, which is lazy, and use
+       `signature-ignored-args` and `additional-signature-data` to describe the
+       cases where the client knows something the command line does not show.
+
+   * - signature-ignored-args
+     - A string list of decimal indices into `args`, in strictly ascending
+       order, naming arguments the built-in signature computation should skip.
+
+       This is for arguments that cannot affect the command's outputs, so that
+       changing them alone does not force a rebuild. A compiler's
+       ``-fdiagnostics-color`` or a linker's ``-Xlinker -no_warn_duplicate``,
+       for instance. Only the client knows which arguments those are; llbuild
+       only needs to be told where they sit. Out-of-order or non-numeric
+       entries are an error.
+
+   * - additional-signature-data
+     - An arbitrary string mixed into the built-in signature computation, for
+       client state that affects the command's outputs but does not appear
+       anywhere in `args` or `env`.
 
    * - env
      - A mapping of keys and values defining the environment to pass to the
        launched process. See also `inherit-env`.
+
+   * - env-base
+     - The name of an entry in the top-level `env-bases` section, whose bindings
+       this command should start from.
+
+       The command's own `env` entries take precedence: a key the base already
+       defines is substituted in place, and a key it does not define is
+       appended. The base is shared, so this costs one reference rather than a
+       copy of the environment per command -- which is the point, for build
+       files where most commands run in nearly the same environment.
+
+       Naming a base the file has not defined is an error, and because the
+       `env-bases` section must precede `commands`, a base is always defined
+       before any command can refer to it.
 
    * - inherit-env
      - A boolean flag controlling whether this command should inherit the base

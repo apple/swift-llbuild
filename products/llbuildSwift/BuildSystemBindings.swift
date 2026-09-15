@@ -1064,14 +1064,263 @@ private final class CStyleEnvironment {
     }
 }
 
+fileprivate func withData<R>(_ string: String, _ body: (UnsafePointer<llb_data_t>) -> R) -> R {
+    var string = string
+    return string.withUTF8 { buf in
+        var data = llb_data_t(length: UInt64(buf.count), data: buf.baseAddress)
+        return withUnsafePointer(to: &data) { body($0) }
+    }
+}
+
+fileprivate func withDataArray<Strings: Collection, R>(_ strings: Strings, _ body: (UnsafePointer<llb_data_t>?, UInt64) -> R) -> R where Strings.Element == String {
+    if strings.isEmpty {
+        return body(nil, 0)
+    }
+    // Pack every string into one buffer, then -- once it has stopped growing, so
+    // its address is stable -- point an `llb_data_t` at each one's slice.
+    var bytes: [UInt8] = []
+    var bounds: [Range<Int>] = []
+    bounds.reserveCapacity(strings.count)
+    for string in strings {
+        let start = bytes.count
+        bytes.append(contentsOf: string.utf8)
+        bounds.append(start ..< bytes.count)
+    }
+    return bytes.withUnsafeBufferPointer { buf in
+        let datas = bounds.map { llb_data_t(length: UInt64($0.count), data: buf.baseAddress! + $0.lowerBound) }
+        return datas.withUnsafeBufferPointer { body($0.baseAddress, UInt64(datas.count)) }
+    }
+}
+
+fileprivate func withDataArrayPairs<R>(_ pairs: [(String, String)], _ body: (UnsafePointer<llb_data_t>?, UnsafePointer<llb_data_t>?, UInt64) -> R) -> R {
+    // `lazy` so neither side is materialized into an array of its own.
+    withDataArray(pairs.lazy.map(\.0)) { keys, count in
+        withDataArray(pairs.lazy.map(\.1)) { values, _ in
+            body(keys, values, count)
+        }
+    }
+}
+
+/// Constructs an llbuild build description in memory, driving the same object
+/// primitives the manifest parser uses, so the resulting description, including
+/// every command's signature, is indistinguishable from one parsed from the
+/// equivalent manifest.
+///
+/// Vended transiently to the `populate` closure of
+/// `BuildSystem.DescriptionSource.inMemory`; do not retain it beyond that
+/// closure.
+public final class BuildDescriptionBuilder {
+    /// The underlying `llb_buildsystem_description_builder_t*`.
+    private let handle: OpaquePointer
+
+    fileprivate init(_ handle: OpaquePointer) {
+        self.handle = handle
+    }
+
+    /// Set the file-system mode the build system runs with (equivalent to the
+    /// manifest's `client.file-system` property).
+    ///
+    /// This configures the build system rather than the graph. Clients whose
+    /// manifests declare a non-default mode must set it here too, or the two
+    /// paths will disagree about which outputs are up to date.
+    public func setFileSystemMode(_ mode: BuildSystemFileSystemMode) {
+        llb_buildsystem_description_builder_set_file_system_mode(handle, mode)
+    }
+
+    /// Declare a target with the given member node names.
+    public func addTarget(_ name: String, nodes: [String]) {
+        withData(name) { namePtr in
+            withDataArray(nodes) { nodesPtr, count in
+                llb_buildsystem_description_builder_add_target(handle, namePtr, nodesPtr, count)
+            }
+        }
+    }
+
+    /// Set the default target, which must already have been added.
+    @discardableResult
+    public func setDefaultTarget(_ name: String) -> Bool {
+        withData(name) { llb_buildsystem_description_builder_set_default_target(handle, $0) }
+    }
+
+    /// Configure a scalar attribute on the named node, declaring it if this is
+    /// its first mention.
+    @discardableResult
+    public func setNodeAttribute(node: String, name: String, value: String) -> Bool {
+        withData(node) { nodePtr in
+            withData(name) { namePtr in
+                withData(value) { valuePtr in
+                    llb_buildsystem_description_builder_set_node_attribute(handle, nodePtr, namePtr, valuePtr)
+                }
+            }
+        }
+    }
+
+    /// Configure a sequence attribute on the named node.
+    @discardableResult
+    public func setNodeAttribute(node: String, name: String, values: [String]) -> Bool {
+        withData(node) { nodePtr in
+            withData(name) { namePtr in
+                withDataArray(values) { valuesPtr, count in
+                    llb_buildsystem_description_builder_set_node_attribute_list(handle, nodePtr, namePtr, valuesPtr, count)
+                }
+            }
+        }
+    }
+
+    /// Configure a map attribute on the named node.
+    @discardableResult
+    public func setNodeAttribute(node: String, name: String, pairs: [(String, String)]) -> Bool {
+        withData(node) { nodePtr in
+            withData(name) { namePtr in
+                withDataArrayPairs(pairs) { keysPtr, valuesPtr, count in
+                    llb_buildsystem_description_builder_set_node_attribute_map(handle, nodePtr, namePtr, keysPtr, valuesPtr, count)
+                }
+            }
+        }
+    }
+
+    /// Declare a shared environment table that commands can inherit from.
+    ///
+    /// A command pointed at a base by `setCommandEnvironmentBase` takes the
+    /// base's bindings as its environment, with its own `env` attribute
+    /// overriding individual keys *in place*, so the effective environment
+    /// keeps the base's ordering, and factoring a command's environment into a
+    /// base leaves its signature unchanged.
+    ///
+    /// This is how a client with many commands whose environments differ in only
+    /// a few keys avoids transferring, storing, and hashing the shared bulk once
+    /// per command.
+    ///
+    /// - returns: False if a base of this name was already declared.
+    @discardableResult
+    public func addEnvironmentBase(_ name: String, bindings: [(String, String)]) -> Bool {
+        withData(name) { namePtr in
+            withDataArrayPairs(bindings) { keysPtr, valuesPtr, count in
+                llb_buildsystem_description_builder_add_environment_base(handle, namePtr, keysPtr, valuesPtr, count)
+            }
+        }
+    }
+
+    /// Create a command for the named tool. Returns nil on failure (unknown
+    /// tool, or the tool declined). Configure it with the `setCommand*` methods,
+    /// then call `finishCommand`.
+    public func beginCommand(name: String, tool: String) -> Command? {
+        let commandHandle = withData(name) { namePtr in
+            withData(tool) { toolPtr in
+                llb_buildsystem_description_builder_begin_command(handle, namePtr, toolPtr)
+            }
+        }
+        guard let commandHandle else { return nil }
+        return Command(handle: commandHandle)
+    }
+
+    public func setCommandInputs(_ command: Command, nodes: [String]) {
+        withDataArray(nodes) { nodesPtr, count in
+            llb_buildsystem_description_builder_set_command_inputs(handle, command.handle, nodesPtr, count)
+        }
+    }
+
+    public func setCommandOutputs(_ command: Command, nodes: [String]) {
+        withDataArray(nodes) { nodesPtr, count in
+            llb_buildsystem_description_builder_set_command_outputs(handle, command.handle, nodesPtr, count)
+        }
+    }
+
+    public func setCommandDescription(_ command: Command, _ description: String) {
+        withData(description) {
+            llb_buildsystem_description_builder_set_command_description(handle, command.handle, $0)
+        }
+    }
+
+    @discardableResult
+    public func setCommandAttribute(_ command: Command, name: String, value: String) -> Bool {
+        withData(name) { namePtr in
+            withData(value) { valuePtr in
+                llb_buildsystem_description_builder_set_command_attribute(handle, command.handle, namePtr, valuePtr)
+            }
+        }
+    }
+
+    @discardableResult
+    public func setCommandAttribute(_ command: Command, name: String, values: [String]) -> Bool {
+        withData(name) { namePtr in
+            withDataArray(values) { valuesPtr, count in
+                llb_buildsystem_description_builder_set_command_attribute_list(handle, command.handle, namePtr, valuesPtr, count)
+            }
+        }
+    }
+
+    @discardableResult
+    public func setCommandAttribute(_ command: Command, name: String, pairs: [(String, String)]) -> Bool {
+        withData(name) { namePtr in
+            withDataArrayPairs(pairs) { keysPtr, valuesPtr, count in
+                llb_buildsystem_description_builder_set_command_attribute_map(handle, command.handle, namePtr, keysPtr, valuesPtr, count)
+            }
+        }
+    }
+
+    /// Point `command` at an environment base declared with
+    /// `addEnvironmentBase`. Its own `env` attribute, if any, overrides
+    /// individual keys.
+    ///
+    /// - returns: False if no such base was declared, or if the command does not
+    ///   support environments.
+    @discardableResult
+    public func setCommandEnvironmentBase(_ command: Command, base: String) -> Bool {
+        withData(base) {
+            llb_buildsystem_description_builder_set_command_environment_base(handle, command.handle, $0)
+        }
+    }
+
+    /// Register the fully-configured command. Call once, after all `setCommand*`
+    /// calls for it; the `Command` must not be used afterwards.
+    public func finishCommand(name: String, _ command: Command) {
+        withData(name) {
+            llb_buildsystem_description_builder_finish_command(handle, $0, command.handle)
+        }
+    }
+
+    /// Request that ownership analysis run when the description is finalized
+    /// (equivalent to the manifest's `perform-ownership-analysis: yes`).
+    public func setPerformOwnershipAnalysis(_ value: Bool) {
+        llb_buildsystem_description_builder_set_perform_ownership_analysis(handle, value)
+    }
+}
+
 /// This class allows building using llbuild's native BuildSystem component.
 public final class BuildSystem {
     public typealias SchedulerAlgorithm = llbuild.SchedulerAlgorithm
 
     public typealias QualityOfService = llbuild.QualityOfService
 
-    /// The build file that the system is configured with.
-    public let buildFile: String
+    /// Where the system gets its build description, decided once at construction.
+    public enum DescriptionSource {
+        /// Parse an llbuild build file from disk.
+        case buildFile(String)
+
+        /// Construct the description in memory, driving the same object
+        /// primitives the parser uses, so no file is read or written.
+        ///
+        /// `populate` is invoked once, during initialization; return false from
+        /// it to fail initialization. `originName` labels the description in any
+        /// diagnostics it produces.
+        ///
+        /// Because a relative `databaseFile` is otherwise resolved against the
+        /// build file's directory, it must be absolute with this source.
+        case inMemory(originName: String, populate: (BuildDescriptionBuilder) -> Bool)
+    }
+
+    /// Where the system's build description comes from.
+    public let descriptionSource: DescriptionSource
+
+    /// The build file that the system is configured with, empty if the
+    /// description is built in memory.
+    public var buildFile: String {
+        switch descriptionSource {
+        case .buildFile(let path): return path
+        case .inMemory: return ""
+        }
+    }
 
     /// The delegate used by the system.
     public let delegate: BuildSystemDelegate
@@ -1082,18 +1331,34 @@ public final class BuildSystem {
     /// The C environment, if used.
     private let _cEnvironment: CStyleEnvironment
 
-    public init(buildFile: String, databaseFile: String, delegate: BuildSystemDelegate, environment: [String: String]? = nil, serial: Bool = false, traceFile: String? = nil, schedulerAlgorithm: SchedulerAlgorithm = .commandNamePriority, schedulerLanes: UInt32 = 0, qos: QualityOfService? = nil) {
+    /// Parse the build description from a build file on disk.
+    public convenience init(buildFile: String, databaseFile: String, delegate: BuildSystemDelegate, environment: [String: String]? = nil, serial: Bool = false, traceFile: String? = nil, schedulerAlgorithm: SchedulerAlgorithm = .commandNamePriority, schedulerLanes: UInt32 = 0, qos: QualityOfService? = nil) {
+        self.init(description: .buildFile(buildFile), databaseFile: databaseFile, delegate: delegate, environment: environment, serial: serial, traceFile: traceFile, schedulerAlgorithm: schedulerAlgorithm, schedulerLanes: schedulerLanes, qos: qos)
+    }
+
+    public init(description: DescriptionSource, databaseFile: String, delegate: BuildSystemDelegate, environment: [String: String]? = nil, serial: Bool = false, traceFile: String? = nil, schedulerAlgorithm: SchedulerAlgorithm = .commandNamePriority, schedulerLanes: UInt32 = 0, qos: QualityOfService? = nil) {
 
         // Safety check that we have linked against a compatibile llbuild framework version
         if llb_get_api_version() != LLBUILD_C_API_VERSION {
             fatalError("llbuild C API version mismatch, found \(llb_get_api_version()), expect \(LLBUILD_C_API_VERSION)")
         }
 
-        self.buildFile = buildFile
+        self.descriptionSource = description
         self.delegate = delegate
 
+        // llbuild uses the build file path only to parse the description and to
+        // resolve a relative database path against; an in-memory description has
+        // neither need, and passes its origin name separately.
+        let buildFilePath: String
+        switch description {
+        case .buildFile(let path):
+            buildFilePath = path
+        case .inMemory:
+            buildFilePath = ""
+        }
+
         // Create a stable C string path.
-        let pathPtr = strdup(buildFile)
+        let pathPtr = strdup(buildFilePath)
         defer {
             if let pathPtr = pathPtr {
                 free(pathPtr)
@@ -1196,8 +1461,23 @@ public final class BuildSystem {
                 return (result) ? 1 : 0;
             }
 
-            // Create the system.
-            _system = llb_buildsystem_create(_delegate, _invocation)
+            // Create the system, over whichever description source was asked for.
+            switch description {
+            case .buildFile:
+                _system = llb_buildsystem_create(_delegate, _invocation)
+            case .inMemory(let originName, _):
+                var originData = copiedDataFromBytes([UInt8](originName.utf8))
+                defer { llb_data_destroy(&originData) }
+                _system = llb_buildsystem_create_with_description(
+                    _delegate, _invocation, &originData,
+                    Unmanaged.passUnretained(self).toOpaque()
+                ) { context, builderHandle in
+                    guard case .inMemory(_, let populate) = BuildSystem.toSystem(context!).descriptionSource else {
+                        preconditionFailure("in-memory description callback on a file-based build system")
+                    }
+                    return populate(BuildDescriptionBuilder(builderHandle!))
+                }
+            }
         }
     }
 
@@ -1237,6 +1517,19 @@ public final class BuildSystem {
     /// Cancel any running build.
     public func cancel() {
         llb_buildsystem_cancel(_system)
+    }
+
+    /// Initialize the build system: obtain the build description from the source
+    /// the system was constructed with, and apply options (for example,
+    /// attaching the database), without building anything. `build`
+    /// auto-initializes, so calling this is only needed to do the work
+    /// separately, to measure it, or to fail early. It is a no-op once
+    /// initialized.
+    ///
+    /// - returns: True on success, false if initialization failed.
+    @discardableResult
+    public func initialize() -> Bool {
+        return llb_buildsystem_initialize(_system)
     }
 
     /// MARK: Internal Delegate Implementation

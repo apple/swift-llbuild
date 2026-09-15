@@ -15,7 +15,9 @@
 
 #include "llbuild/Basic/Defer.h"
 #include "llbuild/Basic/FileSystem.h"
+#include "llbuild/BuildSystem/BuildDescriptionBuilder.h"
 #include "llbuild/BuildSystem/BuildFile.h"
+#include "llbuild/BuildSystem/Command.h"
 #include "llbuild/BuildSystem/BuildKey.h"
 #include "llbuild/BuildSystem/BuildSystemFrontend.h"
 #include "llbuild/BuildSystem/BuildValue.h"
@@ -28,6 +30,7 @@
 #include "BuildKey-C-API-Private.h"
 #include "BuildValue-C-API-Private.h"
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/SourceMgr.h"
@@ -567,6 +570,46 @@ public:
   }
 };
 
+/// The FFI-side half of an in-memory build description.
+///
+/// `BuildDescriptionBuilder` deals in `std::unique_ptr<Command>`, but a C client
+/// can only hold a raw handle between `begin_command` and `finish_command`. This
+/// owns the commands over that window, keyed by the handle it vended, and hands
+/// them to the builder on finish.
+class CAPIDescriptionBuilder {
+  BuildDescriptionBuilder& builder;
+  llvm::DenseMap<Command*, std::unique_ptr<Command>> pendingCommands;
+
+public:
+  CAPIDescriptionBuilder(BuildDescriptionBuilder& builder)
+      : builder(builder) {}
+
+  BuildDescriptionBuilder& getBuilder() { return builder; }
+
+  Command* beginCommand(StringRef name, StringRef toolName) {
+    auto command = builder.createCommand(name, toolName);
+    if (!command)
+      return nullptr;
+
+    auto result = command.get();
+    pendingCommands[result] = std::move(command);
+    return result;
+  }
+
+  void finishCommand(StringRef name, Command* command) {
+    auto it = pendingCommands.find(command);
+    if (it == pendingCommands.end()) {
+      // Not a live handle from this builder; nothing safe to do.
+      assert(0 && "finishCommand on an unknown command handle");
+      return;
+    }
+
+    auto owned = std::move(it->second);
+    pendingCommands.erase(it);
+    builder.addCommand(name, std::move(owned));
+  }
+};
+
 class CAPIBuildSystem {
   llb_buildsystem_delegate_t cAPIDelegate;
   
@@ -604,7 +647,11 @@ class CAPIBuildSystem {
   
 public:
   CAPIBuildSystem(llb_buildsystem_delegate_t delegate,
-                  llb_buildsystem_invocation_t cAPIInvocation)
+                  llb_buildsystem_invocation_t cAPIInvocation,
+                  StringRef descriptionOriginName = "",
+                  void* descriptionContext = nullptr,
+                  bool (*populateDescription)(
+                      void*, llb_buildsystem_description_builder_t*) = nullptr)
     : cAPIDelegate(delegate)
   {
     // Convert the invocation.
@@ -635,9 +682,23 @@ public:
     // Allocate the file system
     std::unique_ptr<basic::FileSystem> fileSystem(new CAPIFileSystem(delegate));
 
-    // Allocate the actual frontend.
-    frontend.reset(new BuildSystemFrontend(*frontendDelegate, invocation,
-                                           std::move(fileSystem)));
+    // Allocate the actual frontend, over whichever description source the
+    // client asked for.
+    if (populateDescription) {
+      frontend.reset(new BuildSystemFrontend(
+          *frontendDelegate, invocation, std::move(fileSystem),
+          [descriptionContext, populateDescription](
+              BuildDescriptionBuilder& builder) -> bool {
+            CAPIDescriptionBuilder capiBuilder(builder);
+            return populateDescription(
+                descriptionContext,
+                (llb_buildsystem_description_builder_t*) &capiBuilder);
+          },
+          descriptionOriginName));
+    } else {
+      frontend.reset(new BuildSystemFrontend(*frontendDelegate, invocation,
+                                             std::move(fileSystem)));
+    }
   }
 
   BuildSystemFrontend& getFrontend() {
@@ -1297,6 +1358,30 @@ llb_buildsystem_t* llb_buildsystem_create(
   return (llb_buildsystem_t*) new CAPIBuildSystem(delegate, invocation);
 }
 
+llb_buildsystem_t* llb_buildsystem_create_with_description(
+    llb_buildsystem_delegate_t delegate,
+    llb_buildsystem_invocation_t invocation,
+    const llb_data_t* description_origin_name, void* context,
+    bool (*populate_description)(
+        void* context, llb_buildsystem_description_builder_t* builder)) {
+  // Check that all required methods are provided.
+  assert(delegate.handle_diagnostic);
+  assert(delegate.command_started);
+  assert(delegate.command_finished);
+  assert(delegate.command_found_discovered_dependency);
+  assert(delegate.command_process_started);
+  assert(delegate.command_process_had_error);
+  assert(delegate.command_process_had_output);
+  assert(delegate.command_process_finished);
+  assert(populate_description);
+
+  return (llb_buildsystem_t*) new CAPIBuildSystem(
+      delegate, invocation,
+      StringRef((const char*)description_origin_name->data,
+                description_origin_name->length),
+      context, populate_description);
+}
+
 void llb_buildsystem_destroy(llb_buildsystem_t* system) {
   delete (CAPIBuildSystem*)system;
 }
@@ -1328,6 +1413,202 @@ bool llb_buildsystem_build_node(llb_buildsystem_t* system_p, const llb_data_t* k
 void llb_buildsystem_cancel(llb_buildsystem_t* system_p) {
   CAPIBuildSystem* system = (CAPIBuildSystem*) system_p;
   system->cancel();
+}
+
+/* In-Memory Build Description API */
+
+namespace {
+
+StringRef toStringRef(const llb_data_t* data) {
+  return StringRef((const char*)data->data, data->length);
+}
+
+/// The `llb_data_t` array C clients pass for list- and map-valued attributes,
+/// viewed as `StringRef`s. Borrows the caller's buffer; valid only as long as it
+/// is.
+std::vector<StringRef> toStringRefs(const llb_data_t* data, uint64_t count) {
+  std::vector<StringRef> result;
+  result.reserve(count);
+  for (uint64_t i = 0; i != count; ++i)
+    result.push_back(toStringRef(&data[i]));
+  return result;
+}
+
+std::vector<std::pair<StringRef, StringRef>> toStringRefPairs(
+    const llb_data_t* keys, const llb_data_t* values, uint64_t count) {
+  std::vector<std::pair<StringRef, StringRef>> result;
+  result.reserve(count);
+  for (uint64_t i = 0; i != count; ++i)
+    result.emplace_back(toStringRef(&keys[i]), toStringRef(&values[i]));
+  return result;
+}
+
+FileSystemMode getFileSystemModeFromLLBMode(
+    llb_buildsystem_file_system_mode_t mode) {
+  switch (mode) {
+  case llb_buildsystem_file_system_mode_device_agnostic:
+    return FileSystemMode::DeviceAgnostic;
+  case llb_buildsystem_file_system_mode_checksum_only:
+    return FileSystemMode::ChecksumOnly;
+  case llb_buildsystem_file_system_mode_full:
+    break;
+  }
+  return FileSystemMode::Full;
+}
+
+}
+
+void llb_buildsystem_description_builder_set_file_system_mode(
+    llb_buildsystem_description_builder_t* builder_p,
+    llb_buildsystem_file_system_mode_t mode) {
+  auto builder = (CAPIDescriptionBuilder*) builder_p;
+  builder->getBuilder().setFileSystemMode(
+      getFileSystemModeFromLLBMode(mode));
+}
+
+void llb_buildsystem_description_builder_add_target(
+    llb_buildsystem_description_builder_t* builder_p, const llb_data_t* name,
+    const llb_data_t* nodes, uint64_t nodes_count) {
+  auto builder = (CAPIDescriptionBuilder*) builder_p;
+  builder->getBuilder().addTarget(toStringRef(name),
+                                  toStringRefs(nodes, nodes_count));
+}
+
+bool llb_buildsystem_description_builder_set_default_target(
+    llb_buildsystem_description_builder_t* builder_p, const llb_data_t* name) {
+  auto builder = (CAPIDescriptionBuilder*) builder_p;
+  return builder->getBuilder().setDefaultTarget(toStringRef(name));
+}
+
+bool llb_buildsystem_description_builder_set_node_attribute(
+    llb_buildsystem_description_builder_t* builder_p,
+    const llb_data_t* node_name, const llb_data_t* name,
+    const llb_data_t* value) {
+  auto builder = (CAPIDescriptionBuilder*) builder_p;
+  return builder->getBuilder().configureNodeAttribute(
+      toStringRef(node_name), toStringRef(name), toStringRef(value));
+}
+
+bool llb_buildsystem_description_builder_set_node_attribute_list(
+    llb_buildsystem_description_builder_t* builder_p,
+    const llb_data_t* node_name, const llb_data_t* name,
+    const llb_data_t* values, uint64_t values_count) {
+  auto builder = (CAPIDescriptionBuilder*) builder_p;
+  return builder->getBuilder().configureNodeAttribute(
+      toStringRef(node_name), toStringRef(name),
+      toStringRefs(values, values_count));
+}
+
+bool llb_buildsystem_description_builder_set_node_attribute_map(
+    llb_buildsystem_description_builder_t* builder_p,
+    const llb_data_t* node_name, const llb_data_t* name,
+    const llb_data_t* keys, const llb_data_t* values, uint64_t count) {
+  auto builder = (CAPIDescriptionBuilder*) builder_p;
+  return builder->getBuilder().configureNodeAttribute(
+      toStringRef(node_name), toStringRef(name),
+      toStringRefPairs(keys, values, count));
+}
+
+bool llb_buildsystem_description_builder_add_environment_base(
+    llb_buildsystem_description_builder_t* builder_p, const llb_data_t* name,
+    const llb_data_t* keys, const llb_data_t* values, uint64_t count) {
+  auto builder = (CAPIDescriptionBuilder*) builder_p;
+  return builder->getBuilder().addEnvironmentBase(
+             toStringRef(name), toStringRefPairs(keys, values, count)) !=
+         nullptr;
+}
+
+llb_buildsystem_command_t*
+llb_buildsystem_description_builder_begin_command(
+    llb_buildsystem_description_builder_t* builder_p, const llb_data_t* name,
+    const llb_data_t* tool_name) {
+  auto builder = (CAPIDescriptionBuilder*) builder_p;
+  return (llb_buildsystem_command_t*) builder->beginCommand(
+      toStringRef(name), toStringRef(tool_name));
+}
+
+void llb_buildsystem_description_builder_set_command_inputs(
+    llb_buildsystem_description_builder_t* builder_p,
+    llb_buildsystem_command_t* command_p, const llb_data_t* nodes,
+    uint64_t nodes_count) {
+  auto builder = (CAPIDescriptionBuilder*) builder_p;
+  auto& b = builder->getBuilder();
+  b.configureCommandInputs(*(Command*)command_p,
+                           toStringRefs(nodes, nodes_count), b.getContext());
+}
+
+void llb_buildsystem_description_builder_set_command_outputs(
+    llb_buildsystem_description_builder_t* builder_p,
+    llb_buildsystem_command_t* command_p, const llb_data_t* nodes,
+    uint64_t nodes_count) {
+  auto builder = (CAPIDescriptionBuilder*) builder_p;
+  auto& b = builder->getBuilder();
+  b.configureCommandOutputs(*(Command*)command_p,
+                            toStringRefs(nodes, nodes_count), b.getContext());
+}
+
+void llb_buildsystem_description_builder_set_command_description(
+    llb_buildsystem_description_builder_t* builder_p,
+    llb_buildsystem_command_t* command_p, const llb_data_t* description) {
+  auto builder = (CAPIDescriptionBuilder*) builder_p;
+  auto& b = builder->getBuilder();
+  b.configureCommandDescription(*(Command*)command_p, toStringRef(description),
+                                b.getContext());
+}
+
+bool llb_buildsystem_description_builder_set_command_attribute(
+    llb_buildsystem_description_builder_t* builder_p,
+    llb_buildsystem_command_t* command_p, const llb_data_t* name,
+    const llb_data_t* value) {
+  auto builder = (CAPIDescriptionBuilder*) builder_p;
+  auto& b = builder->getBuilder();
+  return b.configureCommandAttribute(*(Command*)command_p, toStringRef(name),
+                                     toStringRef(value), b.getContext());
+}
+
+bool llb_buildsystem_description_builder_set_command_attribute_list(
+    llb_buildsystem_description_builder_t* builder_p,
+    llb_buildsystem_command_t* command_p, const llb_data_t* name,
+    const llb_data_t* values, uint64_t values_count) {
+  auto builder = (CAPIDescriptionBuilder*) builder_p;
+  auto& b = builder->getBuilder();
+  return b.configureCommandAttribute(*(Command*)command_p, toStringRef(name),
+                                     toStringRefs(values, values_count),
+                                     b.getContext());
+}
+
+bool llb_buildsystem_description_builder_set_command_attribute_map(
+    llb_buildsystem_description_builder_t* builder_p,
+    llb_buildsystem_command_t* command_p, const llb_data_t* name,
+    const llb_data_t* keys, const llb_data_t* values, uint64_t count) {
+  auto builder = (CAPIDescriptionBuilder*) builder_p;
+  auto& b = builder->getBuilder();
+  return b.configureCommandAttribute(*(Command*)command_p, toStringRef(name),
+                                     toStringRefPairs(keys, values, count),
+                                     b.getContext());
+}
+
+bool llb_buildsystem_description_builder_set_command_environment_base(
+    llb_buildsystem_description_builder_t* builder_p,
+    llb_buildsystem_command_t* command_p, const llb_data_t* base_name) {
+  auto builder = (CAPIDescriptionBuilder*) builder_p;
+  auto& b = builder->getBuilder();
+  return b.configureCommandEnvironmentBase(*(Command*)command_p,
+                                           toStringRef(base_name),
+                                           b.getContext());
+}
+
+void llb_buildsystem_description_builder_finish_command(
+    llb_buildsystem_description_builder_t* builder_p, const llb_data_t* name,
+    llb_buildsystem_command_t* command_p) {
+  auto builder = (CAPIDescriptionBuilder*) builder_p;
+  builder->finishCommand(toStringRef(name), (Command*)command_p);
+}
+
+void llb_buildsystem_description_builder_set_perform_ownership_analysis(
+    llb_buildsystem_description_builder_t* builder_p, bool value) {
+  auto builder = (CAPIDescriptionBuilder*) builder_p;
+  builder->getBuilder().setPerformOwnershipAnalysis(value);
 }
 
 llb_buildsystem_command_t*

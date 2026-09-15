@@ -543,7 +543,8 @@ typedef struct llb_buildsystem_delegate_t_ {
   /// @}
 } llb_buildsystem_delegate_t;
 
-/// Create a new build system instance.
+/// Create a new build system instance which loads its build description by
+/// parsing the build file at the invocation's build file path.
 ///
 /// The C-string members of the invocation structure are immediately copied upon
 /// construction of the build system, and can safely be released upon return.
@@ -557,14 +558,19 @@ llb_buildsystem_destroy(llb_buildsystem_t* system);
 
 /// Initialize the build system.
 ///
-/// This will load the build manifest and apply any other options (for example,
-/// attaching the database).
+/// This will obtain the build description, by parsing the build file, or by
+/// invoking the callback given to \see llb_buildsystem_create_with_description
+/// , and apply any other options (for example, attaching the database).
 ///
 /// Clients may use a single build system for many separate build
 /// invocations. When used this way, the underlying system will transparently
 /// cache the contents of the manifest as well as database results which can
 /// result in a significant performance improvement for builds in little
 /// substantive work is performed.
+///
+/// The build entry points call this themselves, so it only needs to be called
+/// directly in order to do the work separately: to measure it, or to fail
+/// before starting a build.
 ///
 /// \returns True on success, or false if the system could not be
 /// initialized. It is a programmatic error to attempt to use the system after
@@ -599,6 +605,194 @@ llb_buildsystem_build(llb_buildsystem_t* system, const llb_data_t* key);
 /// a cycle was discovered).
 LLBUILD_EXPORT bool
 llb_buildsystem_build_node(llb_buildsystem_t* system, const llb_data_t* key);
+
+/// @name In-Memory Build Description APIs
+///
+/// These let a client construct a build description directly in memory, driving
+/// the same object-construction primitives the manifest parser uses, and so
+/// skipping the manifest serialize/parse round-trip. Because both routes bottom
+/// out in the same code, a description built this way is indistinguishable from
+/// one parsed from the equivalent manifest, including every command's
+/// signature, which is what makes it safe to switch an incremental build between
+/// the two. See \see llb_buildsystem_create_with_description.
+/// @{
+
+/// Opaque handle to an in-memory build description builder. Only valid for the
+/// duration of the `populate_description` callback passed to
+/// \see llb_buildsystem_create_with_description.
+typedef struct llb_buildsystem_description_builder_t_
+    llb_buildsystem_description_builder_t;
+
+/// The file-system comparison mode a build system runs with, mirroring the
+/// manifest's `client.file-system` property.
+typedef enum LLBUILD_ENUM_ATTRIBUTES {
+  /// Full stat comparison, including device and inode ("default").
+  llb_buildsystem_file_system_mode_full LLBUILD_SWIFT_NAME(full) = 0,
+
+  /// Ignore device and inode changes ("device-agnostic").
+  llb_buildsystem_file_system_mode_device_agnostic
+      LLBUILD_SWIFT_NAME(deviceAgnostic) = 1,
+
+  /// Compare contents by checksum only ("checksum-only").
+  llb_buildsystem_file_system_mode_checksum_only
+      LLBUILD_SWIFT_NAME(checksumOnly) = 2,
+} llb_buildsystem_file_system_mode_t
+    LLBUILD_SWIFT_NAME(BuildSystemFileSystemMode);
+
+/// Set the file-system mode the build system runs with.
+///
+/// This configures the build system rather than the graph, and is the in-memory
+/// equivalent of the manifest's `client.file-system` property. Clients whose
+/// manifests declare a non-default mode must set it here too, or the two paths
+/// will disagree about which outputs are up to date.
+LLBUILD_EXPORT void
+llb_buildsystem_description_builder_set_file_system_mode(
+    llb_buildsystem_description_builder_t* builder,
+    llb_buildsystem_file_system_mode_t mode);
+
+/// Declare a target with the given member node names.
+LLBUILD_EXPORT void
+llb_buildsystem_description_builder_add_target(
+    llb_buildsystem_description_builder_t* builder, const llb_data_t* name,
+    const llb_data_t* nodes, uint64_t nodes_count);
+
+/// Set the default target, which must already have been added.
+LLBUILD_EXPORT bool
+llb_buildsystem_description_builder_set_default_target(
+    llb_buildsystem_description_builder_t* builder, const llb_data_t* name);
+
+/// Configure a scalar attribute on the named node, declaring it if this is its
+/// first mention.
+LLBUILD_EXPORT bool
+llb_buildsystem_description_builder_set_node_attribute(
+    llb_buildsystem_description_builder_t* builder, const llb_data_t* node_name,
+    const llb_data_t* name, const llb_data_t* value);
+
+/// Configure a sequence attribute on the named node.
+LLBUILD_EXPORT bool
+llb_buildsystem_description_builder_set_node_attribute_list(
+    llb_buildsystem_description_builder_t* builder, const llb_data_t* node_name,
+    const llb_data_t* name, const llb_data_t* values, uint64_t values_count);
+
+/// Configure a map attribute on the named node, from parallel key/value arrays.
+LLBUILD_EXPORT bool
+llb_buildsystem_description_builder_set_node_attribute_map(
+    llb_buildsystem_description_builder_t* builder, const llb_data_t* node_name,
+    const llb_data_t* name, const llb_data_t* keys, const llb_data_t* values,
+    uint64_t count);
+
+/// Declare a shared environment table that commands can inherit from, given as
+/// parallel key/value arrays.
+///
+/// A command pointed at a base by
+/// \see llb_buildsystem_description_builder_set_command_environment_base takes
+/// the base's bindings as its environment, with its own `env` attribute
+/// overriding individual keys *in place* ,  so the effective environment keeps
+/// the base's ordering, and a command's signature is unchanged by factoring its
+/// environment into a base.
+///
+/// This is how a client with many commands whose environments differ in only a
+/// few keys avoids transferring, storing, and hashing the shared bulk once per
+/// command. The bindings are copied, so the caller need not keep them alive.
+///
+/// \returns False if a base of this name was already declared.
+LLBUILD_EXPORT bool
+llb_buildsystem_description_builder_add_environment_base(
+    llb_buildsystem_description_builder_t* builder, const llb_data_t* name,
+    const llb_data_t* keys, const llb_data_t* values, uint64_t count);
+
+/// Create a command for the named tool. Returns null on failure (unknown tool,
+/// or the tool declined). Configure it with the `set_command_*` calls, then
+/// call \see llb_buildsystem_description_builder_finish_command.
+LLBUILD_EXPORT llb_buildsystem_command_t*
+llb_buildsystem_description_builder_begin_command(
+    llb_buildsystem_description_builder_t* builder, const llb_data_t* name,
+    const llb_data_t* tool_name);
+
+LLBUILD_EXPORT void
+llb_buildsystem_description_builder_set_command_inputs(
+    llb_buildsystem_description_builder_t* builder,
+    llb_buildsystem_command_t* command, const llb_data_t* nodes,
+    uint64_t nodes_count);
+
+LLBUILD_EXPORT void
+llb_buildsystem_description_builder_set_command_outputs(
+    llb_buildsystem_description_builder_t* builder,
+    llb_buildsystem_command_t* command, const llb_data_t* nodes,
+    uint64_t nodes_count);
+
+LLBUILD_EXPORT void
+llb_buildsystem_description_builder_set_command_description(
+    llb_buildsystem_description_builder_t* builder,
+    llb_buildsystem_command_t* command, const llb_data_t* description);
+
+LLBUILD_EXPORT bool
+llb_buildsystem_description_builder_set_command_attribute(
+    llb_buildsystem_description_builder_t* builder,
+    llb_buildsystem_command_t* command, const llb_data_t* name,
+    const llb_data_t* value);
+
+LLBUILD_EXPORT bool
+llb_buildsystem_description_builder_set_command_attribute_list(
+    llb_buildsystem_description_builder_t* builder,
+    llb_buildsystem_command_t* command, const llb_data_t* name,
+    const llb_data_t* values, uint64_t values_count);
+
+/// Set a map-valued command attribute from parallel key/value arrays.
+LLBUILD_EXPORT bool
+llb_buildsystem_description_builder_set_command_attribute_map(
+    llb_buildsystem_description_builder_t* builder,
+    llb_buildsystem_command_t* command, const llb_data_t* name,
+    const llb_data_t* keys, const llb_data_t* values, uint64_t count);
+
+/// Point a command at an environment base declared with
+/// \see llb_buildsystem_description_builder_add_environment_base.
+///
+/// \returns False if no such base was declared, or if the command does not
+/// support environments.
+LLBUILD_EXPORT bool
+llb_buildsystem_description_builder_set_command_environment_base(
+    llb_buildsystem_description_builder_t* builder,
+    llb_buildsystem_command_t* command, const llb_data_t* base_name);
+
+/// Register the fully-configured command and notify the delegate. The command
+/// handle must not be used afterwards.
+LLBUILD_EXPORT void
+llb_buildsystem_description_builder_finish_command(
+    llb_buildsystem_description_builder_t* builder, const llb_data_t* name,
+    llb_buildsystem_command_t* command);
+
+/// Request that ownership analysis run when the description is finalized
+/// (equivalent to the manifest's `perform-ownership-analysis: yes`).
+LLBUILD_EXPORT void
+llb_buildsystem_description_builder_set_perform_ownership_analysis(
+    llb_buildsystem_description_builder_t* builder, bool value);
+
+/// Create a new build system instance which constructs its build description in
+/// memory, rather than parsing one from disk.
+///
+/// The invocation's build file path is unused; no file is read or written.
+/// Because a relative database path is otherwise resolved against the build
+/// file's directory, the invocation's database path must be absolute here.
+///
+/// The C-string members of the invocation structure are immediately copied upon
+/// construction of the build system, and can safely be released upon return.
+///
+/// \param description_origin_name A label for the description, reported as the
+/// location of any diagnostics it produces.
+/// \param context Opaque user context passed through to the callback.
+/// \param populate_description Callback invoked once, during initialization, to
+/// populate the builder; return false from it to fail initialization. It must
+/// remain valid until the system has been initialized.
+LLBUILD_EXPORT llb_buildsystem_t*
+llb_buildsystem_create_with_description(
+    llb_buildsystem_delegate_t delegate,
+    llb_buildsystem_invocation_t invocation,
+    const llb_data_t* description_origin_name, void* context,
+    bool (*populate_description)(
+        void* context, llb_buildsystem_description_builder_t* builder));
+
+/// @}
 
 /// Cancel any ongoing build.
 ///

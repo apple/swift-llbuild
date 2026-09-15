@@ -19,6 +19,7 @@
 #include "llbuild/Core/BuildEngine.h"
 
 #include "llvm/ADT/Optional.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
 
 #include <cstdint>
@@ -35,6 +36,7 @@ namespace basic {
 namespace buildsystem {
 
 class BuildDescription;
+class BuildDescriptionBuilder;
 class BuildKey;
 class BuildNode;
 class BuildValue;
@@ -269,6 +271,26 @@ public:
 
   /// Load an explicit build description. from a file.
   void loadDescription(std::unique_ptr<BuildDescription> description);
+
+  /// Build a description in memory, without a manifest.
+  ///
+  /// `populate` is invoked with a builder wired to this system's own build-file
+  /// delegate, so tools resolve and diagnostics are reported exactly as they
+  /// would when parsing the equivalent manifest.  The description is
+  /// assembled by the very same code, so the two paths cannot disagree about a
+  /// command's configuration or its signature.
+  ///
+  /// The builder is only valid for the duration of the callback. Any
+  /// file-system mode it records is applied to this system once `populate`
+  /// returns.
+  ///
+  /// \param originName A name to attribute configuration diagnostics to, in
+  /// place of a manifest path.
+  /// \returns True on success, or false if `populate` returned false or the
+  /// description could not be finalized.
+  bool loadDescription(
+      llvm::function_ref<bool(BuildDescriptionBuilder&)> populate,
+      StringRef originName);
   
   /// Attach (or create) the database at the given path.
   ///

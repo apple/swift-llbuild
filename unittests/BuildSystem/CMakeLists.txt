@@ -1,7 +1,10 @@
 add_llbuild_unittest(BuildSystemTests
+  BuildDescriptionBuilderTest.cpp
+  BuildDescriptionLoadPerfTest.cpp
   BuildSystemFrontendTest.cpp
   BuildSystemTaskTests.cpp
   BuildValueTest.cpp
+  ShellCommandTest.cpp
   MockBuildSystemDelegate.cpp
   TempDir.cpp
   )

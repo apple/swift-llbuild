@@ -24,6 +24,7 @@
 #include "llbuild/Basic/LLVM.h"
 #include "llbuild/Basic/PlatformUtility.h"
 #include "llbuild/Basic/ShellUtility.h"
+#include "llbuild/BuildSystem/BuildDescriptionBuilder.h"
 #include "llbuild/BuildSystem/BuildFile.h"
 #include "llbuild/BuildSystem/BuildKey.h"
 #include "llbuild/BuildSystem/BuildNode.h"
@@ -290,12 +291,12 @@ public:
     return internalSchemaVersion + (clientVersion << 16);
   }
 
-  void configureFileSystem(int mode) {
-    if (mode == 1) {
+  void configureFileSystem(FileSystemMode mode) {
+    if (mode == FileSystemMode::DeviceAgnostic) {
       std::unique_ptr<basic::FileSystem> newFS(
           new DeviceAgnosticFileSystem(std::move(fileSystem)));
       fileSystem.swap(newFS);
-    } else if (mode == 2) {
+    } else if (mode == FileSystemMode::ChecksumOnly) {
       std::unique_ptr<basic::FileSystem> newFS(
           new ChecksumOnlyFileSystem(std::move(fileSystem)));
       fileSystem.swap(newFS);
@@ -320,6 +321,33 @@ public:
 
   void loadDescription(std::unique_ptr<BuildDescription> description) {
     buildDescription = std::move(description);
+  }
+
+  bool loadDescription(
+      llvm::function_ref<bool(BuildDescriptionBuilder&)> populate,
+      StringRef originName) {
+    this->mainFilename = originName;
+
+    // The builder is wired to the same delegate the manifest loader uses, so
+    // tools resolve and diagnostics are reported identically.
+    BuildDescriptionBuilder builder(fileDelegate, originName);
+    if (!populate(builder)) {
+      error(getMainFilename(), "unable to build in-memory build description");
+      return false;
+    }
+
+    auto description = builder.finalize();
+    if (!description) {
+      error(getMainFilename(), "unable to build in-memory build description");
+      return false;
+    }
+
+    // The client section has no in-memory analogue, so the one part of it that
+    // configures the system rather than the graph has to be applied by hand.
+    configureFileSystem(builder.getFileSystemMode());
+
+    buildDescription = std::move(description);
+    return true;
   }
 
   bool attachDB(StringRef filename, std::string* error_out) {
@@ -4040,9 +4068,9 @@ BuildSystemFileDelegate::configureClient(const ConfigureContext& ctx,
   for (auto prop : properties) {
     if (prop.first == "file-system") {
       if (prop.second == "device-agnostic") {
-        system.configureFileSystem(1);
+        system.configureFileSystem(FileSystemMode::DeviceAgnostic);
       } else if (prop.second == "checksum-only") {
-        system.configureFileSystem(2);
+        system.configureFileSystem(FileSystemMode::ChecksumOnly);
       } else if (prop.second != "default") {
         ctx.error("unsupported client file-system: '" + prop.second + "'");
         return false;
@@ -4130,6 +4158,13 @@ void BuildSystem::loadDescription(
     std::unique_ptr<BuildDescription> description) {
   return static_cast<BuildSystemImpl*>(impl)->loadDescription(
       std::move(description));
+}
+
+bool BuildSystem::loadDescription(
+    llvm::function_ref<bool(BuildDescriptionBuilder&)> populate,
+    StringRef originName) {
+  return static_cast<BuildSystemImpl*>(impl)->loadDescription(populate,
+                                                             originName);
 }
 
 bool BuildSystem::attachDB(StringRef path,

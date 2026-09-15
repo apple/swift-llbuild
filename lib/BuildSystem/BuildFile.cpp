@@ -13,6 +13,8 @@
 #include "llbuild/BuildSystem/BuildFile.h"
 #include "llbuild/BuildSystem/BuildNode.h"
 
+#include "llbuild/BuildSystem/BuildDescriptionBuilder.h"
+
 #include "llbuild/Basic/FileSystem.h"
 #include "llbuild/Basic/LLVM.h"
 #include "llbuild/BuildSystem/BuildDescription.h"
@@ -101,202 +103,17 @@ static void dumpNode(llvm::yaml::Node* node, unsigned indent) {
 }
 #endif
 
-class OwnershipAnalysis {
-  std::map<BuildNode*, Command*> includedPaths;
-  std::map<BuildNode*, Command*> excludedPaths;
-  BuildFileDelegate& fileDelegate;
-
-public:
-  std::vector<std::pair<BuildNode*, Command*>> outputNodesAndCommands;
-
-  std::vector<std::pair<BuildNode*, Command*>> directoryInputNodesAndCommands;
-
-  OwnershipAnalysis(const BuildDescription::command_set& commands, BuildFileDelegate& fileDelegate): fileDelegate(fileDelegate) {
-    // Extract outputs and directory inputs of all commands
-    for (auto it = commands.begin(); it != commands.end(); it++) {
-      Command* command = (*it).getValue().get();
-      for (auto output: command->getOutputs()) {
-        if (!output->isVirtual()) {
-          outputNodesAndCommands.push_back(std::pair<BuildNode*, Command*>(output, command));
-        }
-      }
-
-      for (auto input: command->getInputs()) {
-        if (input->isDirectory()) {
-          directoryInputNodesAndCommands.push_back(std::pair<BuildNode*, Command*>(input, command));
-        }
-      }
-    }
-
-    // Sort paths according to length to ensure we assign owner to parent before assigning owner to its subpaths
-    std::sort(outputNodesAndCommands.begin(),
-              outputNodesAndCommands.end(),
-              [](const std::pair<BuildNode*, Command*> pairA,
-                 const std::pair<BuildNode*, Command*> pairB) -> bool {
-      return pairA.first->getName().str().length() < pairB.first->getName().str().length();
-    });
-  }
-
-  /// Establish ownerships
-  bool establishOwnerships() {
-    for (auto outputNodeAndCommand: outputNodesAndCommands) {
-        if (outputNodeAndCommand.second->isExternalCommand() && outputNodeAndCommand.second->repairViaOwnershipAnalysis == true) {
-          Command *owner = includedOwnerOf(outputNodeAndCommand.first->getName());
-          if (owner == nullptr) {
-            setOwner(outputNodeAndCommand.first, outputNodeAndCommand.second);
-          } else if (owner == outputNodeAndCommand.second) {
-            // A path and some of its subpaths are listed as output dependencies of a task.. Do nothing.
-          } else {
-            std::vector<Command*> conflictingProducers;
-            conflictingProducers.push_back(outputNodeAndCommand.second);
-            conflictingProducers.push_back(owner);
-            fileDelegate.cannotLoadDueToMultipleProducers(outputNodeAndCommand.first, conflictingProducers);
-            return false;
-          }
-        } else {
-          setExcludedOwner(outputNodeAndCommand.first, outputNodeAndCommand.second);
-        }
-    }
-
-    return true;
-  }
-
-  /// Check if node is unowned
-  const bool isIncludedUnownedNode(const BuildNode* node) {
-    return includedOwnerOf(node->getName()) == nullptr && excludedOwnerOf(node->getName()) == nullptr;
-  }
-
-  /// Set owner
-  void setOwner(BuildNode* node, Command* command) {
-    includedPaths[node] = command;
-  }
-  
-  /// Set owner of a path that is produced by a command excluded from ownership analysis so we can distinguish it from an unowned path
-  void setExcludedOwner(BuildNode* node, Command* command) {
-    excludedPaths[node] = command;
-  }
-
-  /// Lookup included owner (a directory prefix of inputPath that is included in the analysis)
-  Command* includedOwnerOf(StringRef inputPath) {
-    auto it = std::find_if(includedPaths.begin(), includedPaths.end(), [inputPath](const std::pair<BuildNode*, Command*>& buildNodeAndCommand) -> bool {
-      if (buildNodeAndCommand.first->getName().endswith("/")) {
-        return inputPath.startswith(buildNodeAndCommand.first->getName());
-      } else {
-        return inputPath.startswith(buildNodeAndCommand.first->getName().str() + "/");
-      }
-    });
-
-    if (it != includedPaths.end()) {
-      return (*it).second;
-    } else {
-      return nullptr;
-    }
-  }
-
-  /// Lookup owner
-  Command* excludedOwnerOf(StringRef inputPath) {
-    auto it = std::find_if(excludedPaths.begin(), excludedPaths.end(), [inputPath](const std::pair<BuildNode*, Command*>& buildNodeAndCommand) -> bool {
-      // TODO: a good explanation of why we use "==" as opposed to "startswith"
-      return inputPath == buildNodeAndCommand.first->getName();
-    });
-
-    if (it != excludedPaths.end()) {
-      return (*it).second;
-    } else {
-      return nullptr;
-    }
-  }
-
-  // Add input node to additional outputs of its owner
-  //
-  // [TaskB]
-  //  |
-  //  v
-  // owned-directory/
-  //      libX.fake-h
-  //  ,-- libY.fake-h (ownership analysis will automatically amend this to outputs of TaskB)
-  //  |   libZ.fake-h
-  //  v
-  // [TaskC]
-  //  |
-  //  v
-  // libY-from-TaskC.fake-h
-  //
-  // This ensures TaskC will wait until TaskB is finished.
-  void amendOutputOfOwnersWithConsumedSubpaths() {
-    for (auto directoryInputNodeAndCommand: directoryInputNodesAndCommands) {
-      Command *owner = includedOwnerOf(directoryInputNodeAndCommand.first->getName());
-      if (owner != nullptr) {
-        auto ownerOutputs = owner->getOutputs();
-        if (std::find(ownerOutputs.begin(), ownerOutputs.end(), directoryInputNodeAndCommand.first) == ownerOutputs.end()) {
-          if (owner->repairViaOwnershipAnalysis) {
-            owner->addOutput(directoryInputNodeAndCommand.first);
-          }
-        }
-      }
-    }
-  }
-
-  //
-  // unowned-directory/
-  //  |  a.txt <-- TaskA
-  //  |  b.txt <-- TaskB
-  //  v
-  // TaskC
-  //
-  // We should add "a.txt" and "b.txt" to mustScanAfterPaths of "unowned-directory/".
-  // This ensures TaskC will wait until TaskA and TaskB are finished.
-  void deferScanningUnownedInputsUntilSubpathsAvailable() {
-    auto unownedDirectoryInputNodesAndConsumingCommands = std::vector<std::pair<BuildNode*, Command*>>();
-    std::copy_if(directoryInputNodesAndCommands.begin(),
-                 directoryInputNodesAndCommands.end(),
-                 std::back_inserter(unownedDirectoryInputNodesAndConsumingCommands),
-                 [this](const std::pair<BuildNode*, Command*> directoryInputNodeAndCommand) -> bool {
-      return isIncludedUnownedNode(directoryInputNodeAndCommand.first) && directoryInputNodeAndCommand.second->repairViaOwnershipAnalysis;
-    });
-
-    // For each output node and its producing command (e.g. "unowned-directory/a.txt" and "TaskA"),
-    // check if there exists an unowned node (e.g. "unowned-directory/" used by "TaskC") that is a parent of the produced node.
-    // Only add "a.txt" to mustScanAfterPaths of "unowned-directory/" if TaskC is marked as "repairViaOwnershipAnalysis".
-    for (auto outputNodeAndCommand: outputNodesAndCommands) {
-      auto repairableUnownedNode =
-        std::find_if(unownedDirectoryInputNodesAndConsumingCommands.begin(),
-                     unownedDirectoryInputNodesAndConsumingCommands.end(),
-                     [=](std::pair<BuildNode*, Command*> unownedDirectoryAndCommand) -> bool {
-          return outputNodeAndCommand.first->getName().startswith(unownedDirectoryAndCommand.first->getName()) && outputNodeAndCommand.second->repairViaOwnershipAnalysis == true;
-      });
-      
-      if (repairableUnownedNode != unownedDirectoryInputNodesAndConsumingCommands.end()) {
-        (*repairableUnownedNode).first->mustScanAfterPaths.push_back(outputNodeAndCommand.first->getName());
-      }
-    }
-  }
-};
-
 class BuildFileImpl {
   /// The name of the main input file.
   std::string mainFilename;
 
   /// The build file delegate the BuildFile was configured with.
   BuildFileDelegate& delegate;
-  
-  /// The set of all registered tools.
-  BuildDescription::tool_set tools;
 
-  /// The set of all declared targets.
-  BuildDescription::target_set targets;
-
-  /// Default target name
-  std::string defaultTarget;
-
-  /// The set of all declared nodes.
-  BuildDescription::node_set nodes;
-
-  /// The set of all declared commands.
-  BuildDescription::command_set commands;
-
-  /// Indicates if we should perform ownership analysis after we read the build file
-  bool performOwnershipAnalysis = false;
+  /// Accumulates the graph as it is parsed. This class is purely the YAML
+  /// front-end for it; everything about how the description is assembled lives
+  /// in the builder, which the in-memory C API drives directly.
+  BuildDescriptionBuilder builder;
 
   /// The number of parsing errors.
   int numErrors = 0;
@@ -344,38 +161,18 @@ class BuildFileImpl {
   }
 
   Tool* getOrCreateTool(StringRef name, llvm::yaml::Node* forNode) {
-    // First, check the map.
-    auto it = tools.find(name);
-    if (it != tools.end())
-      return it->second.get();
-    
-    // Otherwise, ask the delegate to create the tool.
-    auto tool = delegate.lookupTool(name);
+    auto tool = builder.getOrCreateTool(name);
     if (!tool) {
       error(forNode, "invalid tool (" + name.str() +") type in 'tools' map");
       return nullptr;
     }
-    auto result = tool.get();
-    tools[name] = std::move(tool);
-
-    return result;
+    return tool;
   }
 
   Node* getOrCreateNode(StringRef name, bool isImplicit) {
-    // First, check the map.
-    auto it = nodes.find(name);
-    if (it != nodes.end())
-      return it->second.get();
-    
-    // Otherwise, ask the delegate to create the node.
-    auto node = delegate.createNode(name, isImplicit);
-    assert(node);
-    auto result = node.get();
-    nodes[name] = std::move(node);
-
-    return result;
+    return builder.getOrCreateNode(name, isImplicit);
   }
-  
+
   bool parseRootNode(llvm::yaml::Node* node) {
     // The root must always be a mapping.
     if (node->getType() != llvm::yaml::Node::NK_Mapping) {
@@ -458,6 +255,22 @@ class BuildFileImpl {
       ++it;
     }
 
+    // Parse the shared environment tables, if present.
+    //
+    // Must precede 'commands', which reference these by name.
+    if (it != mapping->end() && nodeIsScalarString(it->getKey(), "env-bases")) {
+      if (it->getValue()->getType() != llvm::yaml::Node::NK_Mapping) {
+        error(it->getValue(), "unexpected 'env-bases' value (expected map)");
+        return false;
+      }
+
+      if (!parseEnvironmentBasesMapping(
+              static_cast<llvm::yaml::MappingNode*>(it->getValue()))) {
+        return false;
+      }
+      ++it;
+    }
+
     // Parse the commands mapping, if present.
     if (it != mapping->end() && nodeIsScalarString(it->getKey(), "commands")) {
       if (it->getValue()->getType() != llvm::yaml::Node::NK_Mapping) {
@@ -510,7 +323,7 @@ class BuildFileImpl {
         }
       } if (key == "perform-ownership-analysis") {
         if (value == "yes") {
-          performOwnershipAnalysis = true;
+          builder.setPerformOwnershipAnalysis(true);
         }
       } else {
         properties.push_back({ key, value });
@@ -648,10 +461,9 @@ class BuildFileImpl {
       llvm::yaml::SequenceNode* nodes = static_cast<llvm::yaml::SequenceNode*>(
           entry.getValue());
 
-      // Create the target.
-      auto target = llvm::make_unique<Target>(name);
-
-      // Add all of the nodes.
+      // Collect the node names; the builder resolves them and registers the
+      // target (including notifying the delegate).
+      std::vector<std::string> nodeNameStorage;
       for (auto& node: *nodes) {
         // All items must be scalar.
         if (node.getType() != llvm::yaml::Node::NK_Scalar) {
@@ -659,18 +471,13 @@ class BuildFileImpl {
           continue;
         }
 
-        target->getNodes().push_back(
-            getOrCreateNode(
-                stringFromScalarNode(
-                    static_cast<llvm::yaml::ScalarNode*>(&node)),
-                /*isImplicit=*/true));
+        nodeNameStorage.push_back(
+            stringFromScalarNode(
+                static_cast<llvm::yaml::ScalarNode*>(&node)));
       }
 
-      // Let the delegate know we loaded a target.
-      delegate.loadedTarget(name, *target);
-
-      // Add the target to the targets map.
-      targets[name] = std::move(target);
+      builder.addTarget(name, std::vector<StringRef>(nodeNameStorage.begin(),
+                                                     nodeNameStorage.end()));
     }
 
     return true;
@@ -679,13 +486,10 @@ class BuildFileImpl {
   bool parseDefaultTarget(llvm::yaml::ScalarNode* entry) {
     std::string target = stringFromScalarNode(entry);
 
-    if (targets.find(target) == targets.end()) {
+    if (!builder.setDefaultTarget(target)) {
       error(entry, "invalid default target, a default target should be in targets");
       return false;
     }
-
-    defaultTarget = target;
-    delegate.loadedDefaultTarget(defaultTarget);
 
     return true;
   }
@@ -793,6 +597,58 @@ class BuildFileImpl {
     return true;
   }
 
+  bool parseEnvironmentBasesMapping(llvm::yaml::MappingNode* map) {
+    for (auto& entry: *map) {
+      // Every key must be scalar.
+      if (entry.getKey()->getType() != llvm::yaml::Node::NK_Scalar) {
+        error(entry.getKey(), "invalid key type in 'env-bases' map");
+        continue;
+      }
+      // Every value must be a mapping.
+      if (entry.getValue()->getType() != llvm::yaml::Node::NK_Mapping) {
+        error(entry.getValue(), "invalid value type in 'env-bases' map");
+        continue;
+      }
+
+      auto name = stringFromScalarNode(
+          static_cast<llvm::yaml::ScalarNode*>(entry.getKey()));
+      if (builder.hasEnvironmentBase(name)) {
+        error(entry.getKey(), "duplicate environment base '" + name + "'");
+        continue;
+      }
+
+      // Held only until `addEnvironmentBase` interns them.
+      std::vector<std::pair<std::string, std::string>> bindingStorage;
+      for (auto& binding:
+               *static_cast<llvm::yaml::MappingNode*>(entry.getValue())) {
+        // Every key must be scalar.
+        if (binding.getKey()->getType() != llvm::yaml::Node::NK_Scalar) {
+          error(binding.getKey(),
+                "invalid key type in 'env-bases' entry '" + name + "'");
+          continue;
+        }
+        // Every value must be scalar.
+        if (binding.getValue()->getType() != llvm::yaml::Node::NK_Scalar) {
+          error(binding.getKey(),
+                "invalid value type in 'env-bases' entry '" + name + "'");
+          continue;
+        }
+
+        bindingStorage.emplace_back(
+            stringFromScalarNode(
+                static_cast<llvm::yaml::ScalarNode*>(binding.getKey())),
+            stringFromScalarNode(
+                static_cast<llvm::yaml::ScalarNode*>(binding.getValue())));
+      }
+
+      std::vector<std::pair<StringRef, StringRef>> bindings(
+          bindingStorage.begin(), bindingStorage.end());
+      builder.addEnvironmentBase(name, bindings);
+    }
+
+    return true;
+  }
+
   bool parseCommandsMapping(llvm::yaml::MappingNode* map) {
     for (auto& entry: *map) {
       // Every key must be scalar.
@@ -812,7 +668,7 @@ class BuildFileImpl {
           entry.getValue());
 
       // Check that the command is not a duplicate.
-      if (commands.count(name) != 0) {
+      if (builder.hasCommand(name)) {
         error(entry.getKey(), "duplicate command in 'commands' map");
         continue;
       }
@@ -886,7 +742,7 @@ class BuildFileImpl {
                     /*isImplicit=*/true));
           }
 
-          command->configureInputs(getContext(key), nodes);
+          builder.configureCommandInputs(*command, nodes, getContext(key));
         } else if (nodeIsScalarString(key, "outputs")) {
           if (value->getType() != llvm::yaml::Node::NK_Sequence) {
             error(value, "invalid value type for 'outputs' command key");
@@ -903,17 +759,15 @@ class BuildFileImpl {
               continue;
             }
 
-            auto node = getOrCreateNode(
+            nodes.push_back(
+                getOrCreateNode(
                     stringFromScalarNode(
                         static_cast<llvm::yaml::ScalarNode*>(&nodeName)),
-                    /*isImplicit=*/true);
-            nodes.push_back(node);
-
-            // Add this command to the node producer list.
-            node->getProducers().push_back(command.get());
+                    /*isImplicit=*/true));
           }
 
-          command->configureOutputs(getContext(key), nodes);
+          // This also records the command as a producer of each output.
+          builder.configureCommandOutputs(*command, nodes, getContext(key));
         } else if (nodeIsScalarString(key, "description")) {
           if (value->getType() != llvm::yaml::Node::NK_Scalar) {
             error(value, "invalid value type for 'description' command key");
@@ -923,6 +777,24 @@ class BuildFileImpl {
           command->configureDescription(
               getContext(key), stringFromScalarNode(
                   static_cast<llvm::yaml::ScalarNode*>(value)));
+        } else if (nodeIsScalarString(key, "env-base")) {
+          if (value->getType() != llvm::yaml::Node::NK_Scalar) {
+            error(value, "invalid value type for 'env-base' command key");
+            continue;
+          }
+
+          auto baseName = stringFromScalarNode(
+              static_cast<llvm::yaml::ScalarNode*>(value));
+          auto base = builder.lookupEnvironmentBase(baseName);
+          if (!base) {
+            error(value, "unknown environment base '" + baseName + "'");
+            continue;
+          }
+
+          if (!command->configureEnvironmentBase(getContext(key), base)) {
+            error(key, "'env-base' is not supported by this command");
+            return false;
+          }
         } else {
           // Otherwise, it should be an attribute assignment.
           
@@ -997,11 +869,7 @@ class BuildFileImpl {
         }
       }
 
-      // Let the delegate know we loaded a command.
-      delegate.loadedCommand(name, *command);
-
-      // Add the command to the commands map.
-      commands[name] = std::move(command);
+      builder.addCommand(name, std::move(command));
     }
 
     return true;
@@ -1011,7 +879,8 @@ public:
   BuildFileImpl(class BuildFile& buildFile,
                 StringRef mainFilename,
                 BuildFileDelegate& delegate)
-    : mainFilename(mainFilename), delegate(delegate) {}
+    : mainFilename(mainFilename), delegate(delegate),
+      builder(delegate, mainFilename) {}
 
   BuildFileDelegate* getDelegate() {
     return &delegate;
@@ -1059,27 +928,7 @@ public:
       return nullptr;
     }
 
-    if (performOwnershipAnalysis) {
-      OwnershipAnalysis ownershipAnalysis = OwnershipAnalysis(commands, delegate);
-      if (ownershipAnalysis.establishOwnerships()) {
-        ownershipAnalysis.amendOutputOfOwnersWithConsumedSubpaths();
-        ownershipAnalysis.deferScanningUnownedInputsUntilSubpathsAvailable();
-      } else {
-        return nullptr;
-      }
-    }
-
-    // Create the actual description from our constructed elements.
-    //
-    // FIXME: This is historical, We should tidy up this class to reflect that
-    // it is now just a builder.
-    auto description = llvm::make_unique<BuildDescription>();
-    std::swap(description->getNodes(), nodes);
-    std::swap(description->getTargets(), targets);
-    std::swap(description->getDefaultTarget(), defaultTarget);
-    std::swap(description->getCommands(), commands);
-    std::swap(description->getTools(), tools);
-    return description;
+    return builder.finalize();
   }
 };
 

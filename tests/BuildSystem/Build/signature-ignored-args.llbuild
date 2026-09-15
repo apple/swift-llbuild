@@ -1,0 +1,128 @@
+# Check that arguments marked via 'signature-ignored-args' do not contribute to a
+# command's signature, so changing one does not force a rebuild.
+#
+# This is the same scenario as changed-output-agnostic-commands.llbuild, except
+# that the client tells us *which arguments* do not affect the outputs instead of
+# supplying a precomputed signature of its own.
+#
+# RUN: rm -rf %t.build
+# RUN: mkdir -p %t.build
+# RUN: touch %t.build/input
+# RUN: cp %s %t.build/build.llbuild
+
+# Both commands should run on the initial build.
+#
+# RUN: grep -A1000 "VERSION-BEGIN-[1]" %s | grep -B10000 "VERSION-END-1" | grep -ve '^--$' > %t.build/build-1.llbuild
+# RUN: %{llbuild} buildsystem build --serial --chdir %t.build -f build-1.llbuild > %t.initial.out
+# RUN: %{FileCheck} --check-prefix CHECK-INITIAL --input-file %t.initial.out %s
+# CHECK-INITIAL: C.output-2
+# CHECK-INITIAL: C.output-1
+# RUN: diff %t.build/output-1 %t.build/output-2
+
+# No commands should run on a null rebuild, even though C.output-2's argument at
+# the ignored index changed from '-v' to '-f'.
+#
+# RUN: grep -A1000 "VERSION-BEGIN-[2]" %s | grep -B10000 "VERSION-END-2" | grep -ve '^--$' > %t.build/build-2.llbuild
+# RUN: %{llbuild} buildsystem build --serial --chdir %t.build -f build-2.llbuild > %t.null.out
+# RUN: echo EOF >> %t.null.out
+# RUN: %{FileCheck} --check-prefix CHECK-NULL --input-file %t.null.out %s
+# RUN: diff %t.build/output-1 %t.build/output-2
+# CHECK-NULL-NOT: C.output
+# CHECK-NULL: EOF
+
+# Changing an argument that is *not* ignored does force a rebuild.
+#
+# RUN: grep -A1000 "VERSION-BEGIN-[3]" %s | grep -B10000 "VERSION-END-3" | grep -ve '^--$' > %t.build/build-3.llbuild
+# RUN: %{llbuild} buildsystem build --serial --chdir %t.build -f build-3.llbuild > %t.changed.out
+# RUN: %{FileCheck} --check-prefix CHECK-CHANGED --input-file %t.changed.out %s
+# CHECK-CHANGED: C.output-2
+
+##### VERSION-BEGIN-1 #####
+
+client:
+  name: basic
+
+targets:
+  "": ["<output>"]
+
+nodes:
+  "<C.output-2.timestamp>":
+    is-command-timestamp: true
+
+commands:
+  C.output-1:
+    tool: shell
+    inputs: ["<C.output-2.timestamp>"]
+    outputs: ["<output>"]
+    description: C.output-1
+    args: cp output-2 output-1
+
+  C.output-2:
+    tool: shell
+    inputs: ["input"]
+    outputs: ["<C.output-2.timestamp>"]
+    description: C.output-2
+    args: ["cp", "-v", "input", "output-2"]
+    signature-ignored-args: ["1"]
+
+##### VERSION-END-1 #####
+
+##### VERSION-BEGIN-2 #####
+
+client:
+  name: basic
+
+targets:
+  "": ["<output>"]
+
+nodes:
+  "<C.output-2.timestamp>":
+    is-command-timestamp: true
+
+commands:
+  C.output-1:
+    tool: shell
+    inputs: ["<C.output-2.timestamp>"]
+    outputs: ["<output>"]
+    description: C.output-1
+    args: cp output-2 output-1
+
+  C.output-2:
+    tool: shell
+    inputs: ["input"]
+    outputs: ["<C.output-2.timestamp>"]
+    description: C.output-2
+    args: ["cp", "-f", "input", "output-2"]
+    signature-ignored-args: ["1"]
+
+##### VERSION-END-2 #####
+
+##### VERSION-BEGIN-3 #####
+
+client:
+  name: basic
+
+targets:
+  "": ["<output>"]
+
+nodes:
+  "<C.output-2.timestamp>":
+    is-command-timestamp: true
+
+commands:
+  C.output-1:
+    tool: shell
+    inputs: ["<C.output-2.timestamp>"]
+    outputs: ["<output>"]
+    description: C.output-1
+    args: cp output-2 output-1
+
+  C.output-2:
+    tool: shell
+    inputs: ["input"]
+    outputs: ["<C.output-2.timestamp>"]
+    description: C.output-2
+    args: ["cp", "-f", "-p", "input", "output-2"]
+    signature-ignored-args: ["1"]
+
+##### VERSION-END-3 #####

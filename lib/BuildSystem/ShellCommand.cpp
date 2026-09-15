@@ -21,6 +21,8 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 
+#include <algorithm>
+
 using namespace llvm;
 using namespace llbuild;
 using namespace llbuild::basic;
@@ -48,10 +50,25 @@ CommandSignature ShellCommand::getSignature() const {
   if (!signatureData.empty()) {
     code = code.combine(signatureData);
   } else {
-    for (const auto& arg: args) {
-      code = code.combine(arg);
+    // Skip the arguments the client marked as not affecting the outputs, so that
+    // e.g. moving an index store does not invalidate every compile. `args` is
+    // hashed in order and `signatureIgnoredArgs` is sorted ascending, so this is
+    // a single walk of both.
+    auto nextIgnored = signatureIgnoredArgs.begin();
+    const auto ignoredEnd = signatureIgnoredArgs.end();
+    for (uint32_t i = 0, e = args.size(); i != e; ++i) {
+      if (nextIgnored != ignoredEnd && *nextIgnored == i) {
+        ++nextIgnored;
+        continue;
+      }
+      code = code.combine(args[i]);
     }
-    for (const auto& entry: env) {
+    // Hash the effective environment rather than just this command's own
+    // bindings, so that moving bindings into a shared base does not change any
+    // command's signature.
+    SmallVector<std::pair<StringRef, StringRef>, 16> effectiveEnv;
+    getEffectiveEnv(effectiveEnv);
+    for (const auto& entry: effectiveEnv) {
       code = code.combine(entry.first);
       code = code.combine(entry.second);
     }
@@ -61,6 +78,9 @@ CommandSignature ShellCommand::getSignature() const {
     code = code.combine(int(depsStyle));
     code = code.combine(int(inheritEnv));
     code = code.combine(int(canSafelyInterrupt));
+    if (!additionalSignatureData.empty()) {
+      code = code.combine(additionalSignatureData);
+    }
   }
   signature = code;
   if (signature.isNull()) {
@@ -68,6 +88,45 @@ CommandSignature ShellCommand::getSignature() const {
   }
   cachedSignature = signature;
   return signature;
+}
+
+void ShellCommand::getEffectiveEnv(
+    SmallVectorImpl<std::pair<StringRef, StringRef>>& result) const {
+  if (!envBase) {
+    result.append(envOverrides.begin(), envOverrides.end());
+    return;
+  }
+
+  const auto& bindings = envBase->getBindings();
+  result.reserve(result.size() + bindings.size() + envOverrides.size());
+
+  auto findOverride = [&](StringRef key) {
+    return std::find_if(envOverrides.begin(), envOverrides.end(),
+                        [&](const std::pair<StringRef, StringRef>& entry) {
+                          return entry.first == key;
+                        });
+  };
+
+  // Substitute overrides in place of the base's bindings, so the effective
+  // environment keeps the base's ordering. Commands sharing a base overwhelmingly
+  // override keys the base already defines, they were split out of an
+  // environment that had the same shape, so this reproduces exactly the
+  // environment the command would have declared inline.
+  for (const auto& binding: bindings) {
+    auto it = findOverride(binding.first);
+    result.emplace_back(binding.first, it == envOverrides.end() ? binding.second
+                                                                : it->second);
+  }
+
+  // Anything the base does not mention is appended.
+  for (const auto& entry: envOverrides) {
+    auto it = std::find_if(bindings.begin(), bindings.end(),
+                           [&](const std::pair<StringRef, StringRef>& binding) {
+                             return binding.first == entry.first;
+                           });
+    if (it == bindings.end())
+      result.push_back(entry);
+  }
 }
 
 bool ShellCommand::processDiscoveredDependencies(BuildSystem& system,
@@ -255,6 +314,8 @@ bool ShellCommand::configureAttribute(const ConfigureContext& ctx, StringRef nam
     args.push_back(ctx.getDelegate().getInternedString(value));
   } else if (name == "signature") {
     signatureData = value;
+  } else if (name == "additional-signature-data") {
+    additionalSignatureData = value;
   } else if (name == "deps") {
     depsPaths.clear();
     depsPaths.emplace_back(value);
@@ -322,6 +383,26 @@ bool ShellCommand::configureAttribute(const ConfigureContext& ctx, StringRef nam
   } else if (name == "deps") {
     depsPaths.clear();
     depsPaths.insert(depsPaths.begin(), values.begin(), values.end());
+  } else if (name == "signature-ignored-args") {
+    // Indices into `args`, as decimal strings, strictly ascending. Indices past
+    // the end of the argument list are permitted but have no effect, so this
+    // attribute does not have to be configured after `args`.
+    signatureIgnoredArgs.clear();
+    signatureIgnoredArgs.reserve(values.size());
+    for (auto value: values) {
+      uint32_t index;
+      if (value.getAsInteger(10, index)) {
+        ctx.error("invalid value: '" + value.str() + "' for attribute '" +
+                  name.str() + "'");
+        return false;
+      }
+      if (!signatureIgnoredArgs.empty() && index <= signatureIgnoredArgs.back()) {
+        ctx.error("out of order value: '" + value.str() + "' for attribute '" +
+                  name.str() + "'");
+        return false;
+      }
+      signatureIgnoredArgs.push_back(index);
+    }
   } else {
     return ExternalCommand::configureAttribute(ctx, name, values);
   }
@@ -333,10 +414,10 @@ bool ShellCommand::configureAttribute(
     const ConfigureContext& ctx, StringRef name,
     ArrayRef<std::pair<StringRef, StringRef>> values) {
   if (name == "env") {
-    env.clear();
-    env.reserve(values.size());
+    envOverrides.clear();
+    envOverrides.reserve(values.size());
     for (const auto& entry: values) {
-      env.emplace_back(
+      envOverrides.emplace_back(
           std::make_pair(
               ctx.getDelegate().getInternedString(entry.first),
               ctx.getDelegate().getInternedString(entry.second)));
@@ -345,6 +426,12 @@ bool ShellCommand::configureAttribute(
     return ExternalCommand::configureAttribute(ctx, name, values);
   }
 
+  return true;
+}
+
+bool ShellCommand::configureEnvironmentBase(const ConfigureContext& ctx,
+                                            const EnvironmentBase* base) {
+  envBase = base;
   return true;
 }
 
@@ -398,9 +485,14 @@ void ShellCommand::executeExternalCommand(
 
   bool connectToConsole = false;
 
+  // Compose the environment now, at the point it is actually needed. Only the
+  // commands that run pay for this.
+  SmallVector<std::pair<StringRef, StringRef>, 16> effectiveEnv;
+  getEffectiveEnv(effectiveEnv);
+
   // Execute the command.
   ti.spawn(
-      context, args, env,
+      context, args, effectiveEnv,
       {canSafelyInterrupt, connectToConsole, workingDirectory, inheritEnv, controlEnabled},
       /*completionFn=*/{commandCompletionFn});
 }

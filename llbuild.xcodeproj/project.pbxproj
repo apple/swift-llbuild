@@ -73,6 +73,7 @@
 		14A9859724F63AC100FADB67 /* buildkey.h in Headers */ = {isa = PBXBuildFile; fileRef = B5BE9BAB22E885D900777A06 /* buildkey.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		14A9859824F63AC100FADB67 /* buildvalue.h in Headers */ = {isa = PBXBuildFile; fileRef = B5A308B922F30E0700699B4C /* buildvalue.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		2DB7144323A2AF2F00514E98 /* BuildSystemEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DB7144223A2AF2F00514E98 /* BuildSystemEngineTests.swift */; };
+		RC0000000000000000000022 /* BuildDescriptionBuilderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = RC0000000000000000000021 /* BuildDescriptionBuilderTests.swift */; };
 		402614272087B10B005BD956 /* Tracing.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 402614262087B10B005BD956 /* Tracing.cpp */; };
 		403332D92CADE54B00440C8C /* zero_copy_stream_impl_lite.cc in Sources */ = {isa = PBXBuildFile; fileRef = 40C1F4DB2C79076200757481 /* zero_copy_stream_impl_lite.cc */; };
 		403332DA2CADE54B00440C8C /* any_lite.cc in Sources */ = {isa = PBXBuildFile; fileRef = 40C1F5392C79076200757481 /* any_lite.cc */; };
@@ -530,6 +531,9 @@
 		E171538D1A0BF702004CD598 /* CorePerfTests.mm in Sources */ = {isa = PBXBuildFile; fileRef = E171538C1A0BF702004CD598 /* CorePerfTests.mm */; };
 		E17440C31CE192FF0070A30C /* ShellUtility.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E17440C21CE192FF0070A30C /* ShellUtility.cpp */; };
 		E192E92F1E30014E00122F17 /* BuildValueTest.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E192E92E1E30014E00122F17 /* BuildValueTest.cpp */; };
+		RC0000000000000000000012 /* BuildDescriptionBuilderTest.cpp in Sources */ = {isa = PBXBuildFile; fileRef = RC0000000000000000000011 /* BuildDescriptionBuilderTest.cpp */; };
+		RC0000000000000000000032 /* BuildDescriptionLoadPerfTest.cpp in Sources */ = {isa = PBXBuildFile; fileRef = RC0000000000000000000031 /* BuildDescriptionLoadPerfTest.cpp */; };
+		E1A0B00B1E30014E00122F17 /* ShellCommandTest.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E1A0B00A1E30014E00122F17 /* ShellCommandTest.cpp */; };
 		E19D79921A15D9E6002604FB /* MakefileDepsParser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E19D79911A15D9E6002604FB /* MakefileDepsParser.cpp */; };
 		E19D79951A15DA06002604FB /* MakefileDepsParserTest.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E19D79941A15DA06002604FB /* MakefileDepsParserTest.cpp */; };
 		E1A0B0FF1C971582006DA08F /* DependencyInfoParser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E1A0B0FE1C971581006DA08F /* DependencyInfoParser.cpp */; };
@@ -601,6 +605,7 @@
 		E1B8393A1B52E8C100DB876B /* libllvmSupport.a in Frameworks */ = {isa = PBXBuildFile; fileRef = E1B838A21B52E7DE00DB876B /* libllvmSupport.a */; };
 		E1B8393B1B52E8CC00DB876B /* libllvmSupport.a in Frameworks */ = {isa = PBXBuildFile; fileRef = E1B838A21B52E7DE00DB876B /* libllvmSupport.a */; };
 		E1B839471B52EAAE00DB876B /* libllvmSupport.a in Frameworks */ = {isa = PBXBuildFile; fileRef = E1B838A21B52E7DE00DB876B /* libllvmSupport.a */; };
+		RC0000000000000000000002 /* BuildDescriptionBuilder.cpp in Sources */ = {isa = PBXBuildFile; fileRef = RC0000000000000000000001 /* BuildDescriptionBuilder.cpp */; };
 		E1B8395E1B541C5900DB876B /* BuildFile.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E1B839591B541C1F00DB876B /* BuildFile.cpp */; };
 		E1B8395F1B541C6400DB876B /* libllbuildBuildSystem.a in Frameworks */ = {isa = PBXBuildFile; fileRef = E1B839571B541BFD00DB876B /* libllbuildBuildSystem.a */; };
 		E1B839651B5420F500DB876B /* BuildSystemCommand.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E1B839641B5420F500DB876B /* BuildSystemCommand.cpp */; };
@@ -1635,6 +1640,7 @@
 		2D0FB84B2395D8690088DAB4 /* BuildValue-C-API-Private.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "BuildValue-C-API-Private.h"; sourceTree = "<group>"; };
 		2D86C6DF238D932B006E61FB /* Tool.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = Tool.h; sourceTree = "<group>"; };
 		2DB7144223A2AF2F00514E98 /* BuildSystemEngineTests.swift */ = {isa = PBXFileReference; indentWidth = 4; lastKnownFileType = sourcecode.swift; path = BuildSystemEngineTests.swift; sourceTree = "<group>"; tabWidth = 4; };
+		RC0000000000000000000021 /* BuildDescriptionBuilderTests.swift */ = {isa = PBXFileReference; indentWidth = 4; lastKnownFileType = sourcecode.swift; path = BuildDescriptionBuilderTests.swift; sourceTree = "<group>"; tabWidth = 4; };
 		402614262087B10B005BD956 /* Tracing.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = Tracing.cpp; sourceTree = "<group>"; };
 		403332B52CADC83700440C8C /* llbuild3Common.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = llbuild3Common.xcconfig; sourceTree = "<group>"; };
 		403332B62CADC86300440C8C /* llbuild3Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = llbuild3Debug.xcconfig; sourceTree = "<group>"; };
@@ -4042,6 +4048,10 @@
 		E181D1451F7D90AC0015286C /* Tracing.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = Tracing.h; sourceTree = "<group>"; };
 		E182BE111ABA2B8D001840AD /* Compiler.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Compiler.h; sourceTree = "<group>"; };
 		E192E92E1E30014E00122F17 /* BuildValueTest.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = BuildValueTest.cpp; sourceTree = "<group>"; };
+		E1A0B00A1E30014E00122F17 /* ShellCommandTest.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ShellCommandTest.cpp; sourceTree = "<group>"; };
+		RC0000000000000000000011 /* BuildDescriptionBuilderTest.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = BuildDescriptionBuilderTest.cpp; sourceTree = "<group>"; };
+		RC0000000000000000000031 /* BuildDescriptionLoadPerfTest.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = BuildDescriptionLoadPerfTest.cpp; sourceTree = "<group>"; };
+		RC0000000000000000000013 /* StubBuildFileDelegate.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = StubBuildFileDelegate.h; sourceTree = "<group>"; };
 		E19C3FD51B98C1A70035E1AA /* tests */ = {isa = PBXFileReference; lastKnownFileType = folder; path = tests; sourceTree = "<group>"; };
 		E19D79911A15D9E6002604FB /* MakefileDepsParser.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = MakefileDepsParser.cpp; sourceTree = "<group>"; };
 		E19D79931A15D9F5002604FB /* MakefileDepsParser.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MakefileDepsParser.h; sourceTree = "<group>"; };
@@ -4252,6 +4262,8 @@
 		E1B839381B52E8A500DB876B /* raw_ostream.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = raw_ostream.h; sourceTree = "<group>"; };
 		E1B839391B52E8A500DB876B /* type_traits.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = type_traits.h; sourceTree = "<group>"; };
 		E1B839571B541BFD00DB876B /* libllbuildBuildSystem.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libllbuildBuildSystem.a; sourceTree = BUILT_PRODUCTS_DIR; };
+		RC0000000000000000000001 /* BuildDescriptionBuilder.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = BuildDescriptionBuilder.cpp; sourceTree = "<group>"; };
+		RC0000000000000000000003 /* BuildDescriptionBuilder.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = BuildDescriptionBuilder.h; path = include/llbuild/BuildSystem/BuildDescriptionBuilder.h; sourceTree = SOURCE_ROOT; };
 		E1B839591B541C1F00DB876B /* BuildFile.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = BuildFile.cpp; sourceTree = "<group>"; };
 		E1B8395A1B541C1F00DB876B /* CMakeLists.txt */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = CMakeLists.txt; sourceTree = "<group>"; };
 		E1B8395D1B541C4300DB876B /* BuildFile.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = BuildFile.h; sourceTree = "<group>"; };
@@ -8154,11 +8166,15 @@
 			isa = PBXGroup;
 			children = (
 				C5740D0D1E0352D800567DD8 /* CMakeLists.txt */,
+				RC0000000000000000000011 /* BuildDescriptionBuilderTest.cpp */,
+				RC0000000000000000000031 /* BuildDescriptionLoadPerfTest.cpp */,
 				C5740D081E03523100567DD8 /* BuildSystemFrontendTest.cpp */,
 				E1075ED61E4EA417007D52C6 /* BuildSystemTaskTests.cpp */,
 				E192E92E1E30014E00122F17 /* BuildValueTest.cpp */,
+				E1A0B00A1E30014E00122F17 /* ShellCommandTest.cpp */,
 				E1B3B9DA1E4D5A7A00DF1FBC /* MockBuildSystemDelegate.cpp */,
 				E1B3B9DB1E4D5A7A00DF1FBC /* MockBuildSystemDelegate.h */,
+				RC0000000000000000000013 /* StubBuildFileDelegate.h */,
 				9D0A6D7F1E1FFEA800BE636F /* TempDir.cpp */,
 				9D0A6D801E1FFEA800BE636F /* TempDir.h */,
 			);
@@ -8191,6 +8207,7 @@
 				B5BE9BA422E854C600777A06 /* BuildKeyTests.swift */,
 				B5A308C222F30F2000699B4C /* BuildValueTests.swift */,
 				2DB7144223A2AF2F00514E98 /* BuildSystemEngineTests.swift */,
+				RC0000000000000000000021 /* BuildDescriptionBuilderTests.swift */,
 				E111C117241B25960086A92D /* SwiftNinjaTests.swift */,
 			);
 			path = Swift;
@@ -8972,6 +8989,8 @@
 				E1B8395C1B541C4300DB876B /* Headers */,
 				E1B8395A1B541C1F00DB876B /* CMakeLists.txt */,
 				E11F2B7E1E4D255B00176BAD /* BuildDescription.cpp */,
+				RC0000000000000000000001 /* BuildDescriptionBuilder.cpp */,
+				RC0000000000000000000003 /* BuildDescriptionBuilder.h */,
 				E1B839591B541C1F00DB876B /* BuildFile.cpp */,
 				E1E4A5B31BFC1394001BFFC4 /* BuildKey.cpp */,
 				E1AAD28D1BC65A1900F54680 /* BuildNode.cpp */,
@@ -10954,6 +10973,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				E192E92F1E30014E00122F17 /* BuildValueTest.cpp in Sources */,
+				RC0000000000000000000012 /* BuildDescriptionBuilderTest.cpp in Sources */,
+				RC0000000000000000000032 /* BuildDescriptionLoadPerfTest.cpp in Sources */,
+				E1A0B00B1E30014E00122F17 /* ShellCommandTest.cpp in Sources */,
 				C5740D091E03523100567DD8 /* BuildSystemFrontendTest.cpp in Sources */,
 				9D0A6D811E1FFEA800BE636F /* TempDir.cpp in Sources */,
 				E1075ED71E4EA417007D52C6 /* BuildSystemTaskTests.cpp in Sources */,
@@ -10985,6 +11007,7 @@
 			files = (
 				B5DB3A6D22FDB9B000625133 /* BuildValueTests.swift in Sources */,
 				2DB7144323A2AF2F00514E98 /* BuildSystemEngineTests.swift in Sources */,
+				RC0000000000000000000022 /* BuildDescriptionBuilderTests.swift in Sources */,
 				B5BE9BA522E854C600777A06 /* BuildKeyTests.swift in Sources */,
 				B546B3A922CA49AB007046C0 /* BuildSystemBindingsTests.swift in Sources */,
 				B546B3A522CA161A007046C0 /* BuildDBBindingsTests.swift in Sources */,
@@ -11215,6 +11238,7 @@
 				E1FC67F91BB1F427004EBC54 /* BuildValue.cpp in Sources */,
 				E11F2B7F1E4D255B00176BAD /* BuildDescription.cpp in Sources */,
 				E1E4A5B41BFC1394001BFFC4 /* BuildKey.cpp in Sources */,
+				RC0000000000000000000002 /* BuildDescriptionBuilder.cpp in Sources */,
 				E1B8395E1B541C5900DB876B /* BuildFile.cpp in Sources */,
 				E104FB001B6568E0005C68A0 /* BuildSystem.cpp in Sources */,
 			);

@@ -63,11 +63,38 @@ class ShellCommand : public ExternalCommand {
   /// The command line arguments.
   std::vector<StringRef> args;
 
-  /// Arbitrary string used to contribute to the task signature.
+  /// Arbitrary string used to *replace* the computed task signature.
+  ///
+  /// Deprecated: clients that need to keep an argument from contributing to the
+  /// signature should mark it in `signatureIgnoredArgs` and let the signature be
+  /// computed here, so that the command's identity is derived from the command
+  /// itself rather than from a hash the client has to keep in sync.
   std::string signatureData;
 
-  /// The environment to use. If empty, the environment will be inherited.
-  SmallVector<std::pair<StringRef, StringRef>, 1> env;
+  /// Indices into `args` of arguments that do not affect the command's outputs,
+  /// and are therefore excluded from its signature.
+  ///
+  /// The client owns this knowledge, only it knows that, say, an index-store
+  /// path changes nothing about the object file a compiler produces. Sorted
+  /// strictly ascending; indices past the end of `args` have no effect.
+  SmallVector<uint32_t, 4> signatureIgnoredArgs;
+
+  /// Arbitrary string mixed *into* the computed task signature, for client state
+  /// that is not visible in the command line or environment.
+  std::string additionalSignatureData;
+
+  /// The environment bindings specific to this command.
+  ///
+  /// If `envBase` is set these are layered over it, and are typically just the
+  /// handful of per-file keys that distinguish this command from its siblings.
+  /// Otherwise they are the whole environment. Empty with no base means the
+  /// environment is inherited.
+  SmallVector<std::pair<StringRef, StringRef>, 1> envOverrides;
+
+  /// The shared environment table `envOverrides` is layered over, if any.
+  ///
+  /// Owned by the BuildDescription, which outlives this command.
+  const EnvironmentBase* envBase = nullptr;
   
   /// The path to the dependency output file, if used.
   SmallVector<std::string, 1> depsPaths{};
@@ -125,8 +152,23 @@ public:
 
   virtual const std::vector<StringRef>& getArgs() const { return args; }
 
+  /// The command's own environment bindings, which override those of any base.
   virtual const SmallVector<std::pair<StringRef, StringRef>, 1>&
-  getEnv() const { return env; }
+  getEnvOverrides() const { return envOverrides; }
+
+  /// The shared environment table this command's bindings layer over, if any.
+  const EnvironmentBase* getEnvBase() const { return envBase; }
+
+  /// Append the effective environment, the base composed with this command's
+  /// own bindings, to `result`.
+  ///
+  /// Deliberately not cached: it is needed only when the command is about to
+  /// spawn a process, so composing it on demand keeps a loaded build
+  /// description down to what varies between commands. For a project whose
+  /// script commands each carry a few thousand settings that is the difference
+  /// between megabytes and hundreds of megabytes.
+  void getEffectiveEnv(
+      SmallVectorImpl<std::pair<StringRef, StringRef>>& result) const;
 
   bool getInheritEnv() const { return inheritEnv; }
   
@@ -153,6 +195,9 @@ public:
   virtual bool configureAttribute(
       const ConfigureContext& ctx, StringRef name,
       ArrayRef<std::pair<StringRef, StringRef>> values) override;
+
+  virtual bool configureEnvironmentBase(const ConfigureContext& ctx,
+                                        const EnvironmentBase* base) override;
 
 
   // Shell command doesn't have any dynamic dependencies, so do nothing.

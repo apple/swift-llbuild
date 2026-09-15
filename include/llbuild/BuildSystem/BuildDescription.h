@@ -104,9 +104,45 @@ public:
       ArrayRef<std::pair<StringRef, StringRef>> values) = 0;
 };
 
+/// A table of environment bindings shared by many commands.
+///
+/// Large projects hand thousands of script commands the same multi-thousand
+/// entry environment, differing in only a handful of keys. Declaring the common part once and having
+/// commands name it keeps both the build file and the work of loading it
+/// proportional to what actually varies, rather than to the number of commands
+/// times the size of their settings table.
+///
+/// A command combines its base with its own bindings via
+/// `ShellCommand::getEffectiveEnv`, which is only called when the command is
+/// about to run. Nothing is composed at load time.
+class EnvironmentBase {
+  // DO NOT COPY
+  EnvironmentBase(const EnvironmentBase&) LLBUILD_DELETED_FUNCTION;
+  void operator=(const EnvironmentBase&) LLBUILD_DELETED_FUNCTION;
+
+  /// The bindings, in declaration order.
+  ///
+  /// These reference interned strings, and so are valid for as long as the
+  /// delegate that interned them.
+  std::vector<std::pair<StringRef, StringRef>> bindings;
+
+public:
+  EnvironmentBase() {}
+
+  std::vector<std::pair<StringRef, StringRef>>& getBindings() {
+    return bindings;
+  }
+
+  const std::vector<std::pair<StringRef, StringRef>>& getBindings() const {
+    return bindings;
+  }
+};
+
 /// A complete description of a build.
 class BuildDescription {
 public:
+  typedef llvm::StringMap<std::unique_ptr<EnvironmentBase>> environment_base_set;
+
   // FIXME: This is an inefficent map, the string is duplicated.
   typedef llvm::StringMap<std::unique_ptr<Node>> node_set;
   
@@ -120,6 +156,13 @@ public:
   typedef llvm::StringMap<std::unique_ptr<Tool>> tool_set;
 
 private:
+  /// The shared environment tables commands may reference by name.
+  ///
+  /// Commands hold bare `EnvironmentBase*` pointers into this set, so it has to
+  /// outlive them. Members are destroyed in reverse declaration order, so
+  /// declaring this before `commands` makes it the last of the two to go.
+  environment_base_set environmentBases;
+
   node_set nodes;
 
   target_set targets;
@@ -134,6 +177,14 @@ private:
 public:
   /// @name Accessors
   /// @{
+
+  /// Get the set of shared environment tables for the file.
+  environment_base_set& getEnvironmentBases() { return environmentBases; }
+
+  /// Get the set of shared environment tables for the file.
+  const environment_base_set& getEnvironmentBases() const {
+    return environmentBases;
+  }
 
   /// Get the set of declared nodes for the file.
   node_set& getNodes() { return nodes; }

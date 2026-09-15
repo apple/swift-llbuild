@@ -1,0 +1,59 @@
+# Check that commands can share an environment via a named base.
+#
+# RUN: rm -rf %t.build
+# RUN: mkdir -p %t.build
+# RUN: cat %s | sed -e 's#ENV_PATH#%{env}#g' -e 's#SORT_PATH#%{sort}#g' > %t.build/build.llbuild
+# RUN: %{llbuild} buildsystem build --serial --chdir %t.build > %t.out
+# RUN: %{FileCheck} --input-file=%t.out %s
+
+# The first command takes SHARED_A and SHARED_B straight from the base and
+# overrides one of its keys. It never mentions EXTRA, which sorts ahead of
+# everything the base defines, so requiring its absence here also proves one
+# command's bindings do not leak into another's.
+#
+# CHECK-NOT: EXTRA=
+# CHECK: OVERRIDDEN=from-command-one
+# CHECK: SHARED_A=shared-a
+# CHECK: SHARED_B=shared-b
+
+# The second command shares the same base but overrides that key differently
+# and adds one the base does not define.
+#
+# CHECK: EXTRA=only-on-two
+# CHECK: OVERRIDDEN=from-command-two
+# CHECK: SHARED_A=shared-a
+# CHECK: SHARED_B=shared-b
+
+client:
+  name: basic
+
+targets:
+  basic: ["<two>"]
+default: basic
+
+env-bases:
+  common:
+    SHARED_A: shared-a
+    SHARED_B: shared-b
+    OVERRIDDEN: from-base
+
+commands:
+  "<one>":
+    tool: shell
+    outputs: ["<one>"]
+    args: ENV_PATH | SORT_PATH
+    env-base: common
+    env:
+      OVERRIDDEN: from-command-one
+    inherit-env: false
+
+  "<two>":
+    tool: shell
+    inputs: ["<one>"]
+    outputs: ["<two>"]
+    args: ENV_PATH | SORT_PATH
+    env-base: common
+    env:
+      OVERRIDDEN: from-command-two
+      EXTRA: only-on-two
+    inherit-env: false

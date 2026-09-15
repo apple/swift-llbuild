@@ -20,10 +20,12 @@
 #include "llbuild/Core/BuildEngine.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Optional.h"
 
 #include <atomic>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -42,6 +44,7 @@ class FileSystem;
 
 namespace buildsystem {
 
+class BuildDescriptionBuilder;
 class BuildSystemFrontendDelegate;
 class BuildSystemInvocation;
 enum class CommandResult;
@@ -60,9 +63,30 @@ class BuildSystemFrontend {
   void* impl;
 
 public:
+  /// Construct a frontend which loads its build description by parsing the
+  /// build file named by the `invocation`'s `buildFilePath`.
   BuildSystemFrontend(BuildSystemFrontendDelegate& delegate,
                       const BuildSystemInvocation& invocation,
                       std::unique_ptr<basic::FileSystem> fileSystem);
+
+  /// Construct a frontend which constructs its build description in memory,
+  /// rather than parsing one from disk.
+  ///
+  /// \param populateDescription Invoked once, during initialization, with a
+  /// builder wired to the underlying `BuildSystem`; return false from it to fail
+  /// initialization. It is retained until the description has been built.
+  ///
+  /// \param descriptionOriginName A label for the description, used as the
+  /// location of any diagnostics it produces. No file is read or written.
+  ///
+  /// The `invocation`'s `buildFilePath` is unused in this mode. Because a
+  /// relative `dbPath` is otherwise resolved against the build file's
+  /// directory, it must be absolute here.
+  BuildSystemFrontend(BuildSystemFrontendDelegate& delegate,
+                      const BuildSystemInvocation& invocation,
+                      std::unique_ptr<basic::FileSystem> fileSystem,
+                      std::function<bool(BuildDescriptionBuilder&)> populateDescription,
+                      StringRef descriptionOriginName);
   ~BuildSystemFrontend();
 
   /// @name Client API
@@ -70,9 +94,14 @@ public:
 
   /// Initialize the build system.
   ///
-  /// This will load the manifest and apply all of the command line options to
-  /// construct an appropriate underlying `BuildSystem` for use by subsequent
-  /// build calls.
+  /// This will obtain the build description from the source the frontend was
+  /// constructed with, either parsing the build file, or invoking the populate
+  /// callback, and apply all of the command line options to construct an
+  /// appropriate underlying `BuildSystem` for use by subsequent build calls.
+  ///
+  /// `build` and `buildNode` call this themselves, so it only needs to be
+  /// called directly in order to do the work separately: to measure it, or to
+  /// fail before starting a build. It is a no-op once initialized.
   ///
   /// \returns True on success, or false if there were errors. If initialization
   /// fails, the frontend is in an indeterminant state and should not be reused.

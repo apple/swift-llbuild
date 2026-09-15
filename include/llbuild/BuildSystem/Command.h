@@ -32,6 +32,7 @@ class BuildSystem;
 class BuildKey;
 class BuildValue;
 class Command;
+class EnvironmentBase;
 class Node;
 
 /// Context for information that may be needed for a configuration action.
@@ -111,6 +112,18 @@ public:
   virtual bool configureAttribute(
       const ConfigureContext&, StringRef name,
       ArrayRef<std::pair<StringRef, StringRef>> values) = 0;
+
+  /// Called by the build file loader to attach a shared environment table that
+  /// the command's own environment bindings are layered over.
+  ///
+  /// Not pure virtual: only commands that have an environment can make sense of
+  /// a base for one, and returning false lets the loader diagnose the rest.
+  ///
+  /// \returns True if the command accepted the base.
+  virtual bool configureEnvironmentBase(const ConfigureContext&,
+                                        const EnvironmentBase*) {
+    return false;
+  }
 
   /// @}
 

@@ -84,6 +84,9 @@
 /// compile for multiple versions of the API.
 ///
 /// Version History:
+/// 20: Added the in-memory build description APIs, including
+///     `llb_buildsystem_create_with_description`.
+///
 /// 19: Added isResultValid API with a fallback to CAPIExternalCommand.
 ///
 /// 18: Added support for configuring outputs of dynamic tasks via the C API.
@@ -123,6 +126,6 @@
 /// 1: Added `environment` parameter to llb_buildsystem_invocation_t.
 ///
 /// 0: Pre-history
-#define LLBUILD_C_API_VERSION 19
+#define LLBUILD_C_API_VERSION 20
 
 #endif
