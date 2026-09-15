@@ -16,6 +16,11 @@ endif()
 install(TARGETS swift-build-tool
         COMPONENT swift-build-tool
         DESTINATION bin)
+if(MSVC)
+  install(FILES $<TARGET_FILE_DIR:swift-build-tool>/$<TARGET_FILE_BASE_NAME:swift-build-tool>.pdb
+          DESTINATION bin
+          OPTIONAL)
+endif()
 
 add_custom_target(install-swift-build-tool
                   DEPENDS swift-build-tool

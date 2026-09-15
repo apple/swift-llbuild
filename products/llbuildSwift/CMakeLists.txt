@@ -65,6 +65,11 @@ install(TARGETS llbuildSwift
   ARCHIVE DESTINATION lib/swift/pm/llbuild COMPONENT libllbuildSwift
   LIBRARY DESTINATION lib/swift/pm/llbuild COMPONENT libllbuildSwift
   RUNTIME DESTINATION bin COMPONENT libllbuildSwift)
+if(MSVC)
+  install(FILES $<TARGET_FILE_DIR:llbuildSwift>/$<TARGET_FILE_BASE_NAME:llbuildSwift>.pdb
+    DESTINATION bin
+    OPTIONAL)
+endif()
 set_property(GLOBAL APPEND PROPERTY LLBuild_EXPORTS llbuildSwift)
 
 # Add install target.

@@ -51,6 +51,11 @@ install(TARGETS llbuild
   LIBRARY DESTINATION lib${LLBUILD_LIBDIR_SUFFIX}
   RUNTIME DESTINATION bin
   COMPONENT llbuild)
+if(MSVC)
+  install(FILES $<TARGET_FILE_DIR:llbuild>/$<TARGET_FILE_BASE_NAME:llbuild>.pdb
+    DESTINATION bin
+    OPTIONAL)
+endif()
 set_property(GLOBAL APPEND PROPERTY LLBuild_EXPORTS llbuild)
 
 add_custom_target(install-llbuild
